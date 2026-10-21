@@ -1,0 +1,315 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-figtree);
+  --font-heading: var(--font-figtree);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-over: var(--over);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* Arcadia Home: white surfaces, forest green, a pale sage page. Flat and crisp. */
+  --background: #f4f7f4;
+  --foreground: #12261c;
+  --card: #ffffff;
+  --card-foreground: #12261c;
+  --popover: #ffffff;
+  --popover-foreground: #12261c;
+  --primary: #166534;
+  --primary-foreground: #ffffff;
+  --secondary: #eef5ef;
+  --secondary-foreground: #14532d;
+  --muted: #f1f5f2;
+  --muted-foreground: #56685e;
+  --accent: #dcfce7;
+  --accent-foreground: #14532d;
+  --destructive: #b42318;
+  --border: #e1e8e3;
+  --input: #d3ddd6;
+  --ring: #22c55e;
+  --radius: 0.625rem;
+
+  --brand: #166534;
+  --brand-foreground: #ffffff;
+  --brand-soft: #dcfce7;
+  --good: #15803d;
+  --warn: #b45309;
+  --over: #b42318;
+
+  --line: rgb(22 101 52 / 0.12);
+  --surface-highlight: rgb(255 255 255 / 0.85);
+  --glass: rgb(255 255 255 / 0.55);
+  --glass-strong: rgb(255 255 255 / 0.86);
+  --glass-bar: rgb(255 255 255 / 0.6);
+  --page-wash:
+    radial-gradient(900px 560px at 95% -10%, rgb(34 197 94 / 0.42), transparent 62%),
+    radial-gradient(800px 520px at -8% 35%, rgb(22 163 74 / 0.3), transparent 60%),
+    radial-gradient(760px 460px at 55% 108%, rgb(132 204 22 / 0.26), transparent 60%),
+    linear-gradient(180deg, #f3f9f4 0%, #e9f3ec 100%);
+  --shadow-soft: 0 1px 2px rgb(18 38 28 / 0.04), 0 8px 24px -14px rgb(22 101 52 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(18 38 28 / 0.05), 0 18px 36px -16px rgb(22 101 52 / 0.28);
+
+  /* Category colours: validated order, see lib/categories.ts */
+  --cat-materials: #2f6fb3;
+  --cat-labour: #c98500;
+  --cat-transport: #8e4fb0;
+  --cat-equipment: #1e9466;
+  --cat-other: #c2410c;
+
+  --chart-1: var(--cat-materials);
+  --chart-2: var(--cat-labour);
+  --chart-3: var(--cat-transport);
+  --chart-4: var(--cat-equipment);
+  --chart-5: var(--cat-other);
+  --chart-grid: #edf2ee;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #46584e;
+  --sidebar-primary: #166534;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8f5ec;
+  --sidebar-accent-foreground: #14532d;
+  --sidebar-border: #e1e8e3;
+  --sidebar-ring: #22c55e;
+}
+
+.dark {
+  --background: #0b1410;
+  --foreground: #e3ede7;
+  --card: #111d17;
+  --card-foreground: #e3ede7;
+  --popover: #13211a;
+  --popover-foreground: #e3ede7;
+  --primary: #4ade80;
+  --primary-foreground: #052e16;
+  --secondary: #16261e;
+  --secondary-foreground: #bbf7d0;
+  --muted: #15231c;
+  --muted-foreground: #98aea2;
+  --accent: #173826;
+  --accent-foreground: #bbf7d0;
+  --destructive: #f2705f;
+  --border: #22332a;
+  --input: #2c3f35;
+  --ring: #4ade80;
+
+  --brand: #4ade80;
+  --brand-foreground: #052e16;
+  --brand-soft: #173826;
+  --good: #4ade80;
+  --warn: #f0b34a;
+  --over: #f2705f;
+
+  --line: rgb(255 255 255 / 0.08);
+  --surface-highlight: rgb(255 255 255 / 0.06);
+  --glass: rgb(17 31 24 / 0.58);
+  --glass-strong: rgb(17 31 24 / 0.9);
+  --glass-bar: rgb(12 22 17 / 0.72);
+  --page-wash:
+    radial-gradient(900px 520px at 92% -8%, rgb(34 197 94 / 0.16), transparent 62%),
+    radial-gradient(760px 480px at -6% 38%, rgb(22 163 74 / 0.12), transparent 60%),
+    linear-gradient(180deg, #0b1410 0%, #0a1712 100%);
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 26px -14px rgb(0 0 0 / 0.6);
+  --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.35), 0 20px 38px -16px rgb(0 0 0 / 0.75);
+
+  --cat-materials: #4a8ad0;
+  --cat-labour: #c98500;
+  --cat-transport: #a274c4;
+  --cat-equipment: #22a271;
+  --cat-other: #e0662e;
+  --chart-grid: #1c2b23;
+
+  --sidebar: #0e1913;
+  --sidebar-foreground: #a3b8ac;
+  --sidebar-primary: #4ade80;
+  --sidebar-primary-foreground: #052e16;
+  --sidebar-accent: #173826;
+  --sidebar-accent-foreground: #dcfce7;
+  --sidebar-border: #1f2e26;
+  --sidebar-ring: #4ade80;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    background-image: var(--page-wash);
+    background-attachment: fixed;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+@layer base {
+  /* Display face: the same Archivo, stretched wide like site signage. */
+  .font-display {
+    font-family: var(--font-figtree);
+    letter-spacing: -0.02em;
+  }
+  /* Grid tracks must never grow to fit a wide child (charts, tables, tab rows). */
+  .grid > * {
+    min-width: 0;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* Glass surfaces: one blur level everywhere, stronger opacity for overlays. */
+@layer components {
+  /* Frosted glass: translucent white over the green wash, one blur level everywhere. */
+  .surface {
+    background: var(--glass);
+    border: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 var(--surface-highlight), var(--shadow-soft);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+  }
+  /* Menus, dialogs, popovers: more opaque so text stays crisp. */
+  .surface-raised {
+    background: var(--glass-strong);
+    border: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 var(--surface-highlight), var(--shadow-lift);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+  }
+  /* Sidebar, top bar, bottom navigation. */
+  .glass-bar {
+    background: var(--glass-bar);
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+  }
+  /* Only for surfaces that navigate or open something. */
+  .lift {
+    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-2px);
+    box-shadow: inset 0 1px 0 var(--surface-highlight), var(--shadow-lift);
+    border-color: color-mix(in oklab, var(--primary) 35%, var(--line));
+  }
+  .brand-fill {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+  /* Glass sheen on the solid green hero card. */
+  .brand-sheen {
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.07) 1px, transparent 1px),
+      linear-gradient(135deg, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0) 45%),
+      linear-gradient(160deg, #1f8a4c 0%, #166534 55%, #12512a 100%);
+    background-size: 22px 22px, 22px 22px, auto, auto;
+    border: 1px solid rgb(255 255 255 / 0.18);
+  }
+  .dark .brand-sheen {
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.12) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.12) 1px, transparent 1px),
+      linear-gradient(135deg, rgb(255 255 255 / 0.3) 0%, rgb(255 255 255 / 0) 45%),
+      linear-gradient(160deg, #6ee7a0 0%, #4ade80 55%, #22c55e 100%);
+    background-size: 22px 22px, 22px 22px, auto, auto;
+  }
+  /* Faint blueprint grid behind the hero card. */
+  .blueprint {
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.07) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lift, .lift:hover { transition: none; transform: none; }
+}
+
+/* Measuring-tape budget meter: ticks every 10%, bold every 50%. */
+.tape {
+  background-color: var(--muted);
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      transparent 0 calc(10% - 1px),
+      color-mix(in oklab, var(--foreground) 22%, transparent) calc(10% - 1px) 10%
+    );
+  background-size: 100% 40%;
+  background-repeat: no-repeat;
+  background-position: bottom;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+@keyframes ring {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+.animate-wave { animation: wave 0.9s ease-in-out infinite; transform-origin: center; }
+.animate-ring { animation: ring 1.6s ease-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-wave, .animate-ring { animation: none; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+  .surface, .surface-raised, .glass-bar { box-shadow: none; backdrop-filter: none; background: white; }
+}

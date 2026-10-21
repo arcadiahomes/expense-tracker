@@ -1,0 +1,2 @@
+ALTER TABLE "site_budgets" ADD COLUMN "alert_percent" smallint DEFAULT 80 NOT NULL;--> statement-breakpoint
+ALTER TABLE "site_budgets" ADD CONSTRAINT "site_budgets_alert_percent_range" CHECK ("site_budgets"."alert_percent" between 1 and 100);

@@ -1,0 +1,3 @@
+ALTER TABLE "expenses" ADD CONSTRAINT "expenses_submitted_has_time" CHECK ("expenses"."status" = 'draft' or "expenses"."submitted_at" is not null);--> statement-breakpoint
+ALTER TABLE "expenses" ADD CONSTRAINT "expenses_reviewed_has_reviewer" CHECK ("expenses"."status" not in ('approved', 'rejected') or ("expenses"."reviewed_by" is not null and "expenses"."reviewed_at" is not null));--> statement-breakpoint
+ALTER TABLE "expenses" ADD CONSTRAINT "expenses_rejected_has_reason" CHECK ("expenses"."status" <> 'rejected' or length(btrim("expenses"."rejection_reason")) > 0);

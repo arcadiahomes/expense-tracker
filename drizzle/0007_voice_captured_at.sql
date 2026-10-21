@@ -1,0 +1,1 @@
+ALTER TABLE "voice_batches" ADD COLUMN "captured_at" timestamp with time zone;
