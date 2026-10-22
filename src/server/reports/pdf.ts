@@ -13,7 +13,7 @@ import { cleanText } from "./safe";
 
 const FONT_DIR = path.join(process.cwd(), "src/assets/fonts");
 let fonts: Record<"latin" | "latinBold" | "ml" | "mlBold", Buffer> | null = null;
-function loadFonts() {
+export function loadFonts() {
   fonts ??= {
     latin: readFileSync(path.join(FONT_DIR, "Carlito-Regular.ttf")),
     latinBold: readFileSync(path.join(FONT_DIR, "Carlito-Bold.ttf")),

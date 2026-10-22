@@ -296,7 +296,59 @@ export const billFilters = pageInput.extend({
   q: optionalText(100),
 });
 
-export const RECEIPT_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"] as const;
+// ---- Invoices ---------------------------------------------------------------
+
+export const GST_RATES = ["0", "5", "12", "18", "28"] as const;
+
+/** An invoice to the client for work on a site. The number is generated when left blank. */
+export const clientInvoiceInput = z
+  .object({
+    siteId: uuid,
+    invoiceNumber: z.string().trim().max(40).optional().transform((v) => v || undefined),
+    invoiceDate: isoDate,
+    dueDate: isoDate,
+    clientName: trimmed(120, "Client name"),
+    clientAddress: optionalText(300),
+    clientGstin: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .optional()
+      .transform((v) => v || undefined)
+      .refine((v) => !v || /^[0-9A-Z]{15}$/.test(v), "GSTIN has 15 letters and digits."),
+    gstPercent: z.enum(GST_RATES, "Pick a GST rate.").default("0"),
+    notes: optionalText(1000),
+    items: z.array(expenseItemInput).min(1, "Add at least one item.").max(50),
+  })
+  .refine((i) => i.dueDate >= i.invoiceDate, { message: "Due date is before the invoice date.", path: ["dueDate"] })
+  .refine((i) => i.items.some((x) => Number(x.quantity) * Number(x.unitPrice) > 0), {
+    message: "The invoice total must be above ₹0.",
+    path: ["items"],
+  });
+
+export const invoicePaidInput = z.object({
+  id: uuid,
+  paidOn: isoDate,
+  method: z.enum(PAYMENT_METHODS).refine((m) => m !== "credit", "Pick how the client paid.").default("bank"),
+  reference: optionalText(120),
+});
+
+export const invoiceCancelInput = z.object({ id: uuid, reason: trimmed(300, "Reason") });
+
+export const INVOICE_STATUSES = ["all", "unpaid", "overdue", "paid", "cancelled"] as const;
+
+export const invoiceFilters = pageInput.extend({
+  siteId: uuid.optional(),
+  status: z.enum(INVOICE_STATUSES).default("all"),
+  q: optionalText(100),
+});
+
+/** A worker's wage invoice for a period on one site, built from attendance and payments. */
+export const labourInvoiceInput = z
+  .object({ siteId: uuid, workerId: uuid, from: isoDate, to: isoDate })
+  .refine((f) => f.from <= f.to, { message: "The start date is after the end date.", path: ["from"] });
+
+export const RECEIPT_TYPES =["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"] as const;
 export { MAX_RECEIPT_BYTES };
 
 export const receiptMeta = z
