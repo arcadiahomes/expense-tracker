@@ -65,7 +65,7 @@ test("a new site, created once however often it's tapped, becomes the visible ac
 });
 
 test("pages fit the screen and are private", async () => {
-  for (const path of ["/", "/voice", "/materials", "/labour", "/reports", "/bills", "/suppliers", "/engineers"]) {
+  for (const path of ["/", "/voice", "/materials", "/labour", "/reports", "/invoices", "/bills", "/suppliers", "/engineers"]) {
     const res = await page.goto(path);
     expect(res?.status(), path).toBe(200);
     expect(res?.headers()["cache-control"], path).toMatch(/private.*no-store|no-store.*private/);

@@ -16,6 +16,7 @@ import {
   Menu,
   Mic,
   Moon,
+  ReceiptIndianRupee,
   ReceiptText,
   Settings,
   Store,
@@ -40,7 +41,7 @@ type NavItem = { href: string; label: string; icon: LucideIcon };
 const NAV_GROUPS: { label: string; items: string[] }[] = [
   { label: "Overview", items: ["/", "/my", "/approvals"] },
   { label: "Operations", items: ["/sites", "/engineers", "/voice", "/materials", "/labour"] },
-  { label: "Finance", items: ["/reports", "/bills", "/suppliers", "/activity"] },
+  { label: "Finance", items: ["/reports", "/invoices", "/bills", "/suppliers", "/activity"] },
 ];
 
 const NAV: NavItem[] = [
@@ -51,6 +52,7 @@ const NAV: NavItem[] = [
   { href: "/engineers", label: "Assistant engineers", icon: Users },
   { href: "/voice", label: "Voice entry", icon: Mic },
   { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/invoices", label: "Invoices", icon: ReceiptIndianRupee },
   { href: "/bills", label: "Bills", icon: ReceiptText },
   { href: "/materials", label: "Materials", icon: Boxes },
   { href: "/labour", label: "Labour", icon: HardHat },
@@ -65,10 +67,11 @@ const ASSISTANT_NAV = ["/my", "/voice"];
 
 /**
  * What the user's roles allow. Activity is for site owners and accountants (and org admins),
- * Approvals for site owners, My entries for anyone whose entries need approval. Someone who
- * is only an assistant engineer sees just their entries and voice entry. Assistant engineers'
- * accounts are managed by the admin (the organization owner) only. (The server enforces
- * all of this; hiding links only keeps the app tidy.)
+ * Approvals for site owners, Invoices for site owners and accountants, My entries for anyone
+ * whose entries need approval. Someone who is only an assistant engineer sees just their
+ * entries and voice entry. Assistant engineers' accounts are managed by the admin (the
+ * organization owner) only. (The server enforces all of this; hiding links only keeps the
+ * app tidy.)
  */
 function useVisibleNav() {
   const { sites, org, readsRecords } = useSession();
@@ -77,8 +80,14 @@ function useVisibleNav() {
   if (!readsRecords) return NAV.filter((n) => ASSISTANT_NAV.includes(n.href));
   const audit = org.role !== "member" || sites.some((s) => can(s.role, "audit:read"));
   const admin = org.role === "owner";
+  const invoices = org.role !== "member" || sites.some((s) => can(s.role, "finance:manage"));
   return NAV.filter(
-    (n) => (n.href !== "/activity" || audit) && (n.href !== "/approvals" || approves) && (n.href !== "/my" || submits) && (n.href !== "/engineers" || admin),
+    (n) =>
+      (n.href !== "/activity" || audit) &&
+      (n.href !== "/approvals" || approves) &&
+      (n.href !== "/my" || submits) &&
+      (n.href !== "/engineers" || admin) &&
+      (n.href !== "/invoices" || invoices),
   );
 }
 

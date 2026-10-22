@@ -521,3 +521,76 @@ export const notifications = pgTable(
   },
   (t) => [index().on(t.userId, t.organizationId, t.createdAt.desc()), index().on(t.expenseId)],
 );
+
+// ---- Client invoices --------------------------------------------------------
+
+/**
+ * What the company bills its client for work on a site. Money owed *to* the company,
+ * so it never touches expenses, budgets or spend. Status (unpaid, overdue, paid,
+ * cancelled) is derived in SQL from paid_on, cancelled_at and the due date.
+ * Issued invoices aren't edited: cancel one (with a reason) and issue a new one.
+ */
+export const clientInvoices = pgTable(
+  "client_invoices",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    organizationId: uuid()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: uuid()
+      .notNull()
+      .references(() => constructionSites.id, { onDelete: "cascade" }),
+    invoiceNumber: text().notNull(),
+    invoiceDate: date({ mode: "string" }).notNull(),
+    dueDate: date({ mode: "string" }).notNull(),
+    clientName: text().notNull(),
+    clientAddress: text(),
+    clientGstin: text(),
+    /** A rate the user entered (0 for none); the tax amount is worked out in SQL from the items. */
+    gstPercent: numeric({ precision: 5, scale: 2 }).notNull().default("0"),
+    notes: text(),
+    createdBy: text()
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+    paidOn: date({ mode: "string" }),
+    paidMethod: paymentMethod(),
+    paidReference: text(),
+    paidBy: text().references(() => users.id, { onDelete: "set null" }),
+    cancelledAt: timestamp({ withTimezone: true }),
+    cancelledBy: text().references(() => users.id, { onDelete: "set null" }),
+    cancelReason: text(),
+  },
+  (t) => [
+    unique().on(t.organizationId, t.invoiceNumber),
+    index().on(t.siteId, t.invoiceDate),
+    check("client_invoices_due_after_invoice", sql`${t.dueDate} >= ${t.invoiceDate}`),
+    check("client_invoices_gst_range", sql`${t.gstPercent} between 0 and 28`),
+    check("client_invoices_paid_has_method", sql`${t.paidOn} is null or ${t.paidMethod} is not null`),
+    check("client_invoices_cancel_has_reason", sql`${t.cancelledAt} is null or length(btrim(${t.cancelReason})) > 0`),
+    check("client_invoices_paid_or_cancelled", sql`${t.paidOn} is null or ${t.cancelledAt} is null`),
+  ],
+);
+
+export const clientInvoiceItems = pgTable(
+  "client_invoice_items",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    invoiceId: uuid()
+      .notNull()
+      .references(() => clientInvoices.id, { onDelete: "cascade" }),
+    position: smallint().notNull().default(0),
+    description: text().notNull(),
+    quantity: quantity().notNull().default("1"),
+    unit: text().notNull().default("nos"),
+    unitPrice: money().notNull(),
+    amount: money()
+      .notNull()
+      .generatedAlwaysAs((): SQL => sql`round(${clientInvoiceItems.quantity} * ${clientInvoiceItems.unitPrice}, 2)`),
+  },
+  (t) => [
+    index().on(t.invoiceId),
+    check("client_invoice_items_quantity_positive", sql`${t.quantity} > 0`),
+    check("client_invoice_items_unit_price_nonnegative", sql`${t.unitPrice} >= 0`),
+  ],
+);

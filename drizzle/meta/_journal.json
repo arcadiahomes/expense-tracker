@@ -99,6 +99,13 @@
       "when": 1792578108483,
       "tag": "0013_protect_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792645356045,
+      "tag": "0014_client_invoices",
+      "breakpoints": true
     }
   ]
 }

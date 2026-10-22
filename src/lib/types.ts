@@ -123,7 +123,68 @@ export type Bill = {
   canManage: boolean;
 };
 
-export type DateFormat = "dd/MM/yyyy" | "d MMM yyyy" | "yyyy-MM-dd";
+/** Derived in SQL: cancelled and paid are recorded; overdue is unpaid past the due date. */
+export type InvoiceStatus = "unpaid" | "overdue" | "paid" | "cancelled";
+
+export type ClientInvoiceItem = {
+  description: string;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  amount: string;
+};
+
+export type ClientInvoice = {
+  id: string;
+  siteId: string;
+  siteName: string;
+  invoiceNo: string;
+  date: string;
+  dueDate: string;
+  client: string;
+  clientAddress: string;
+  clientGstin: string;
+  gstPercent: number;
+  subtotal: number;
+  gst: number;
+  total: number;
+  status: InvoiceStatus;
+  notes: string;
+  items: ClientInvoiceItem[];
+  paidOn?: string;
+  paidMethod?: PaymentMode;
+  paidReference?: string;
+  cancelReason?: string;
+  createdBy: string;
+};
+
+export type LabourInvoiceLine = {
+  date: string;
+  kind: "attendance" | "wage" | "advance";
+  description: string;
+  /** Wage earned that day (attendance) or the amount paid (wage, advance); never negative. */
+  amount: string;
+};
+
+/** A worker's wages for a period on one site. Every figure comes from SQL. */
+export type LabourInvoice = {
+  site: { id: string; name: string; location: string; client: string };
+  worker: { id: string; name: string; trade: string; phone: string };
+  from: string;
+  to: string;
+  days: string;
+  /** Balance before the period: earned minus paid (negative is an advance not yet worked off). */
+  opening: string;
+  earned: string;
+  wagesPaid: string;
+  advances: string;
+  /** opening + earned − wages − advances: what the site owes the worker at the end of the period. */
+  closing: string;
+  attendance: { date: string; status: "present" | "half_day"; workType: string; dayRate: string; amount: string }[];
+  payments: LabourInvoiceLine[];
+};
+
+export type DateFormat ="dd/MM/yyyy" | "d MMM yyyy" | "yyyy-MM-dd";
 export type NumberStyle = "full" | "compact";
 export type Language = "en" | "hi" | "ml" | "ta" | "kn";
 
