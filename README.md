@@ -18,12 +18,11 @@ Built with Next.js 16 (App Router, Cache Components) on Neon Postgres, using Dri
    **Tests drop and recreate the test branch's schema on every run.** `npm test` refuses to run if
    `DATABASE_URL_TEST` points at the same database as `DATABASE_URL`.
 2. **Environment.** `cp .env.example .env` and fill it in (table below). Never commit `.env`.
-3. **Install, migrate, seed, run** (Node 24):
+3. **Install, migrate, run** (Node 24):
 
 ```bash
 npm ci
 npm run db:migrate     # applies drizzle/*.sql using DIRECT_DATABASE_URL
-npm run db:seed        # optional: fictional demo org: 8 users, 6 sites, ~1,800 expenses, bills, attendance
 npm run dev            # http://localhost:3000
 ```
 
@@ -49,23 +48,6 @@ full name, email, sites → **Create account**. Copy the link shown (it is shown
 privately. From the same page you can change their sites, send a password reset link, or deactivate them
 (they're signed out at once; their entries stay).
 
-### Demo data
-
-The seed is entirely made up: people's names, `@arcadia.example` addresses (a reserved domain that can't
-receive mail), supplier names, amounts and documents. It contains no real personal or financial data. All
-demo users share the password in `SEED_DEMO_PASSWORD`:
-
-| Sign-in | Role |
-|---|---|
-| `arun@arcadia.example` | org owner (owner of every site) |
-| `meera@arcadia.example` | accountant on every site |
-| `suresh@`, `priya@`, `neethu@`, `omkar@` | engineers on their own site |
-| `rahul@arcadia.example` | assistant engineer (entries need approval) |
-| `kavya@arcadia.example` | read-only viewer on one site |
-
-Re-running the seed replaces only the demo organization. It refuses to run when `NODE_ENV` or `VERCEL_ENV`
-is `production`.
-
 ## Environment variables
 
 All are server-only (no `NEXT_PUBLIC_` variables), so none reaches the browser. In production the server
@@ -86,7 +68,6 @@ checks them at start-up and refuses to run with a missing or unsafe value (`src/
 | `ANTHROPIC_API_KEY` | voice, OCR (optional) | Lets Claude read voice transcripts (for users who accepted the notice) and suggest receipt details. |
 | `VOICE_AI`, `VOICE_AI_MODEL` | voice (optional) | `VOICE_AI=off` uses only the rule-based reader. The model defaults to `claude-opus-5-5`. |
 | `RECEIPT_OCR`, `RECEIPT_OCR_MODEL` | OCR (optional) | `RECEIPT_OCR=off` disables receipt reading. |
-| `SEED_DEMO_PASSWORD` | `db:seed` | Development and preview only. The production server refuses to start with it set. |
 | `RATE_LIMIT` | tests | `off` disables rate limits (set by the e2e config only). Never set it in production. |
 
 ## Scripts
@@ -99,7 +80,6 @@ npm test               # vitest against DATABASE_URL_TEST: migrations, authoriza
 npm run e2e            # Playwright against a production build and the test branch
 npm run db:generate    # new migration from src/db/schema/* (never hand-edit drizzle/)
 npm run db:migrate
-npm run db:seed
 npm run db:studio
 ```
 

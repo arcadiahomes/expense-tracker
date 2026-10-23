@@ -17,7 +17,6 @@ npm test           # vitest against DATABASE_URL_TEST: drops and recreates that 
 npx vitest run test/expenses.test.ts -t "keyset"   # one file / one test
 npm run db:generate  # migration from src/db/schema/*; never hand-edit drizzle/
 npm run db:migrate   # uses DIRECT_DATABASE_URL
-npm run db:seed      # idempotent demo org; password from SEED_DEMO_PASSWORD
 ```
 
 `build` and `dev` need `.env`. `DATABASE_URL` is read only by `src/db/index.ts` (server-only, lazily connected).
