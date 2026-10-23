@@ -1,7 +1,7 @@
 # Backup and recovery
 
 There are two things to protect: the **Postgres database** (Neon), which holds every record, and the
-**receipt bucket** (R2/S3), which holds the files those records point to. Uploaded files are referenced by
+**receipt bucket** (R2/S3, or a Vercel Blob store), which holds the files those records point to. Uploaded files are referenced by
 `receipts.storage_key`, so restore both to roughly the same point in time.
 
 Targets with the setup below: **RPO** (data you can lose) of a few seconds for the database and up to 24 hours
@@ -65,7 +65,7 @@ Migrations are additive (see [deployment.md](deployment.md)), so the usual fix i
 migration damaged data, restore a branch to just before it ran (above), and keep the code that expects the
 old schema deployed until the data is repaired.
 
-## Receipt files (R2/S3)
+## Receipt files (R2/S3/Blob)
 
 - **AWS S3:** turn on **Versioning** and a lifecycle rule that expires *noncurrent* versions after 90 days.
   A deleted or replaced file can be restored by removing its delete marker or restoring the previous version.
@@ -73,6 +73,9 @@ old schema deployed until the data is repaired.
 - **Cloudflare R2** has no object versioning. Copy the bucket daily to a second bucket or another provider,
   e.g. with `rclone sync r2:arcadia-receipts backup:arcadia-receipts-YYYYMMDD` (or `rclone copy` into a dated
   prefix), using a read-only token for the source.
+- **Vercel Blob** has no object versioning, and rclone can't read it. Copy the store daily with a small
+  script that pages through `list()` from `@vercel/blob` and `get()`s each object into a second store or an
+  S3/R2 bucket under the same pathname (the pathname is `receipts.storage_key`).
 - The app deletes a file's object when a receipt is replaced or removed. The database row stays, soft-deleted
   with who, when and why. To bring one back, restore the object to the same key (`receipts.storage_key`) and
   clear `deleted_at` on the row.

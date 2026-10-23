@@ -1,4 +1,5 @@
 import "server-only";
+import { blobStorageDriver } from "./blob";
 import { localStorageDriver } from "./local";
 import { s3StorageDriver } from "./s3";
 
@@ -32,8 +33,9 @@ function pick(): StorageDriver {
     if (!bucket) throw new Error("STORAGE_DRIVER=s3 needs S3_BUCKET (plus S3_REGION, and S3_ENDPOINT for R2 or MinIO).");
     return s3StorageDriver({ bucket, region: process.env.S3_REGION || "auto", endpoint: process.env.S3_ENDPOINT || undefined });
   }
+  if (process.env.STORAGE_DRIVER === "blob") return blobStorageDriver();
   // Serverless file systems are read-only or wiped between requests: uploads would be lost.
-  if (process.env.VERCEL) throw new Error("Set STORAGE_DRIVER=s3 (with S3_BUCKET) on Vercel; local file storage doesn't persist there.");
+  if (process.env.VERCEL) throw new Error("Set STORAGE_DRIVER=s3 (with S3_BUCKET) or blob on Vercel; local file storage doesn't persist there.");
   return localStorageDriver(process.env.UPLOAD_DIR || ".uploads");
 }
 

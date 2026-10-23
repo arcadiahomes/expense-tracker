@@ -2,8 +2,8 @@ import { storage } from "@/server/storage";
 import { verifyFileToken } from "@/server/storage/local";
 
 /**
- * Serves a file from the local storage driver for a valid, unexpired signed token
- * (issued by /api/receipts/[id] after an access check). With S3 storage, signed URLs
+ * Serves a file from the local or Vercel Blob storage driver for a valid, unexpired signed
+ * token (issued by /api/receipts/[id] after an access check). With S3 storage, signed URLs
  * point at the bucket instead and this route isn't used.
  */
 export async function GET(_req: Request, ctx: RouteContext<"/api/files/[token]">) {

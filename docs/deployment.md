@@ -20,10 +20,10 @@ variables for you. Each step says where to click or what to run.
 5. Optional: a separate role with only the privileges the app needs. The default `neondb_owner` works but
    can drop tables. Migrations need the owner; the app needs `select, insert, update, delete` on `public`.
 
-## 2. Receipt storage (R2 or S3)
+## 2. Receipt storage (R2, S3 or Vercel Blob)
 
-Vercel's file system doesn't keep files, so production must use `STORAGE_DRIVER=s3`. The server refuses to
-start on Vercel without it.
+Vercel's file system doesn't keep files, so production must use `STORAGE_DRIVER=s3` or `STORAGE_DRIVER=blob`.
+The server refuses to start on Vercel without one of them.
 
 **Cloudflare R2:** create a bucket (no public access, no custom domain). Under R2 → Manage API tokens,
 create an *Object Read & Write* token scoped to that bucket. The endpoint is
@@ -31,6 +31,11 @@ create an *Object Read & Write* token scoped to that bucket. The endpoint is
 
 **AWS S3:** create a bucket with *Block all public access* on, versioning on and SSE-S3 encryption.
 Create an IAM user or role with `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/*` only.
+
+**Vercel Blob:** Storage → Create → Blob, choose **Private** access, and connect it to the project
+(Production and Preview; preferably a second store for Preview). Connecting sets `BLOB_READ_WRITE_TOKEN` or,
+with OIDC, `BLOB_STORE_ID`; nothing else is needed. Receipt views stream through `/api/files/<token>`
+instead of going straight to the store, so each view costs function time and Blob transfer.
 
 Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup guide) so a deleted receipt can be recovered.
 
@@ -47,11 +52,12 @@ Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup 
 | `DIRECT_DATABASE_URL` | `main` branch, direct | `preview` branch, direct | Only for migrations (step 4). Not read by the app. |
 | `BETTER_AUTH_SECRET` | `openssl rand -base64 32` | a **different** random value | Required, 32+ chars. Changing it signs everyone out. |
 | `BETTER_AUTH_URL` | `https://<your domain>` | leave unset | Production must match the browser URL exactly. Previews use `VERCEL_URL` / `VERCEL_BRANCH_URL` automatically. |
-| `STORAGE_DRIVER` | `s3` | `s3` | Required on Vercel. |
+| `STORAGE_DRIVER` | `s3` or `blob` | same | Required on Vercel. The `S3_*`/`AWS_*` rows below are for `s3` only. |
 | `S3_BUCKET` | production bucket | a separate preview bucket | |
 | `S3_REGION` | `auto` (R2) or the AWS region | same | |
 | `S3_ENDPOINT` | R2 endpoint (omit for AWS) | same | |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | bucket-scoped key | preview bucket key | |
+| `BLOB_READ_WRITE_TOKEN` / `BLOB_STORE_ID` | set by connecting the store | preview store | For `blob` only. |
 | `SENTRY_DSN` | your Sentry project DSN | optional | Optional. Errors also go to Vercel logs either way. |
 | `ANTHROPIC_API_KEY` | optional | optional | Voice reading and receipt OCR. Without it the rule-based reader is used and OCR is off. |
 | `VOICE_AI`, `RECEIPT_OCR` | optional `off` | | Switch the AI features off without removing the key. |
