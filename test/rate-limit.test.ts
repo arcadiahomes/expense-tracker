@@ -80,6 +80,13 @@ describe("production configuration check", () => {
     expect(productionEnvProblems(good)).toEqual([]);
   });
 
+  it("accepts Vercel Blob with a token or an OIDC store id", () => {
+    const blob = { ...good, STORAGE_DRIVER: "blob", S3_BUCKET: undefined };
+    expect(productionEnvProblems({ ...blob, BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_x" })).toEqual([]);
+    expect(productionEnvProblems({ ...blob, BLOB_STORE_ID: "store_x" })).toEqual([]);
+    expect(productionEnvProblems(blob)).toHaveLength(1);
+  });
+
   it("flags missing or unsafe settings without echoing values", () => {
     const problems = productionEnvProblems({
       ...good,

@@ -60,8 +60,9 @@ checks them at start-up and refuses to run with a missing or unsafe value (`src/
 | `DATABASE_URL_TEST` | `npm test`, `npm run e2e` | A separate branch. **Its schema is dropped on every run.** |
 | `BETTER_AUTH_SECRET` | auth | 32+ random characters: `openssl rand -base64 32`. |
 | `BETTER_AUTH_URL` | auth | Public origin, e.g. `http://localhost:3000`. Must match the URL in the browser. |
-| `STORAGE_DRIVER` | receipts | `s3` for S3-compatible storage (required on Vercel). Unset: local disk in `UPLOAD_DIR`. |
+| `STORAGE_DRIVER` | receipts | `s3` for S3-compatible storage or `blob` for a private Vercel Blob store (one of them is required on Vercel). Unset: local disk in `UPLOAD_DIR`. |
 | `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT` | receipts | With `STORAGE_DRIVER=s3`. Private bucket. `S3_ENDPOINT` for R2/MinIO. Credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or the runtime role. |
+| `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID` | receipts | With `STORAGE_DRIVER=blob`. Set by Vercel when a Blob store is connected (`BLOB_STORE_ID` with OIDC). |
 | `UPLOAD_DIR` | receipts (dev) | Local directory for the dev storage driver (default `.uploads`, gitignored). |
 | `FILE_URL_SECRET` | receipts (dev) | Signs 5-minute local file links. Falls back to `BETTER_AUTH_SECRET`. |
 | `SENTRY_DSN` | monitoring (optional) | Sends server and browser errors to Sentry. Without it, errors are still logged as JSON lines. |
