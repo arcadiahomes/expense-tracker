@@ -30,8 +30,8 @@ export async function expectAccessible(page: Page) {
 export const isMobile = (page: Page) => (page.viewportSize()?.width ?? 1024) < 768;
 
 /**
- * A fresh organization and its owner (the admin) in the test database, created the way
- * `npm run db:seed` does, since there is no public sign-up. Returns the credentials.
+ * A fresh organization and its owner (the admin) in the test database, since there is
+ * no public sign-up. Returns the credentials.
  */
 export async function provisionAdmin() {
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;

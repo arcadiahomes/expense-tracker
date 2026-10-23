@@ -56,7 +56,7 @@ Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup 
 | `ANTHROPIC_API_KEY` | optional | optional | Voice reading and receipt OCR. Without it the rule-based reader is used and OCR is off. |
 | `VOICE_AI`, `RECEIPT_OCR` | optional `off` | | Switch the AI features off without removing the key. |
 
-   **Never set in production:** `SEED_DEMO_PASSWORD` (the server refuses to start with it), `DATABASE_URL_TEST`,
+   **Never set in production:** `DATABASE_URL_TEST`,
    `APP_TODAY`, `RATE_LIMIT=off`, `SKIP_ENV_CHECK`.
 
 3. Settings → Domains: add your domain. Then set `BETTER_AUTH_URL` to `https://<that domain>` and redeploy.
@@ -70,8 +70,8 @@ Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup 
    Migrations are additive and run in order (`drizzle/meta/_journal.json`). A migration that drops or
    rewrites data must be split: ship code that works with both shapes, migrate, then remove the old shape.
 5. Deploy (push to the production branch, or Deployments → Redeploy). On start, the server checks its
-   configuration (`src/server/env.ts`) and refuses to run with a missing secret, a non-https auth URL, local
-   file storage, or the demo seed password present. The error names the variable but never prints its value.
+   configuration (`src/server/env.ts`) and refuses to run with a missing secret, a non-https auth URL
+   or local file storage. The error names the variable but never prints its value.
 6. Create the admin once (from the same trusted machine, with production's `DATABASE_URL` and `BETTER_AUTH_URL`):
 
    ```bash
@@ -92,15 +92,12 @@ Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup 
 
 Previews use the `preview` Neon branch and bucket, never production data. To refresh the preview data from
 production, **reset the branch from its parent** in Neon (Branches → preview → Reset from parent) only if
-production contains nothing you aren't allowed to copy. Otherwise migrate it and seed demo data:
+production contains nothing you aren't allowed to copy. Otherwise migrate it and create an admin:
 
 ```bash
 DIRECT_DATABASE_URL='<preview direct>' npm run db:migrate
-DATABASE_URL='<preview pooled>' SEED_DEMO_PASSWORD='<any 8+ chars>' npm run db:seed
+DATABASE_URL='<preview pooled>' npm run admin:bootstrap
 ```
-
-The seed is fictional (`*.example` addresses, made-up names and amounts) and refuses to run when
-`NODE_ENV` or `VERCEL_ENV` is `production`.
 
 ## 5. Release checklist
 

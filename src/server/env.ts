@@ -16,6 +16,5 @@ export function productionEnvProblems(env: NodeJS.ProcessEnv = process.env): str
     problems.push("BETTER_AUTH_URL must be an https:// origin in production.");
   if (env.VERCEL && env.STORAGE_DRIVER !== "s3") problems.push("STORAGE_DRIVER must be s3 on Vercel: its file system doesn't keep uploads.");
   if (env.STORAGE_DRIVER === "s3" && !env.S3_BUCKET) problems.push("STORAGE_DRIVER=s3 needs S3_BUCKET.");
-  if (env.SEED_DEMO_PASSWORD && env.VERCEL_ENV === "production") problems.push("SEED_DEMO_PASSWORD is set in production. Remove it: the demo seed is for development only.");
   return problems;
 }

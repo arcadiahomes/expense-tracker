@@ -13,7 +13,6 @@
     "typecheck": "next typegen && tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx --conditions=react-server --env-file-if-exists=.env src/db/seed.ts",
     "db:studio": "drizzle-kit studio",
     "admin:bootstrap": "tsx --conditions=react-server --env-file-if-exists=.env src/db/admin.ts bootstrap",
     "admin:reset-link": "tsx --conditions=react-server --env-file-if-exists=.env src/db/admin.ts reset-link",

@@ -87,11 +87,8 @@ describe("production configuration check", () => {
       BETTER_AUTH_SECRET: "short",
       BETTER_AUTH_URL: "http://ledger.example.com",
       STORAGE_DRIVER: undefined,
-      SEED_DEMO_PASSWORD: "demo-pass",
-      VERCEL_ENV: "production",
     });
-    expect(problems).toHaveLength(5);
+    expect(problems).toHaveLength(4);
     expect(problems.join(" ")).not.toContain("secretpw");
-    expect(problems.join(" ")).not.toContain("demo-pass");
   });
 });
