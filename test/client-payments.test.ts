@@ -16,6 +16,7 @@ import { organizationProfile, updateOrganizationProfile } from "@/server/data/or
 import { createSite, getSite } from "@/server/data/sites";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { renderClientInvoicePdf, renderReceiptPdf } from "@/server/reports/invoice-pdf";
+import type { ClientReceipt } from "@/lib/types";
 import { world } from "./fixtures";
 
 let w: Awaited<ReturnType<typeof world>>;
@@ -46,46 +47,58 @@ const pay = (invoiceId: string, amount: string, over: Record<string, unknown> = 
   recordClientPayment(w.a.owner, { invoiceId, amount, paidOn: "2026-10-01", method: "bank", clientKey: crypto.randomUUID(), ...over });
 
 describe("client payments", () => {
-  it("walks a project from advance to final payment, each with its own receipt and balance", async () => {
-    const { siteId, inv } = await project("Varghese Villa");
-    expect(inv.total).toBe(1500000);
-    expect(inv.clientEmail).toBe("thomas@example.com");
-    expect([inv.paid, inv.balance, inv.status]).toEqual([0, 1500000, "unpaid"]);
+  // One ₹15,00,000 project taken from advance to final payment. Each step is its own test
+  // (they run in order and build on each other) so each gets the full timeout against the
+  // remote test database.
+  describe("from advance to final payment, each with its own receipt and balance", () => {
+    let siteId: string;
+    let inv: Awaited<ReturnType<typeof project>>["inv"];
+    const r: Record<"a" | "b" | "c" | "d", ClientReceipt> = {} as never;
+    beforeAll(async () => {
+      ({ siteId, inv } = await project("Varghese Villa"));
+    });
 
-    // Scenario A: initial advance.
-    const a = await pay(inv.id, "500000", { paidOn: "2026-08-02", reference: "UTR 4528", notes: "Advance on signing" });
-    expect(a).toMatchObject({ stage: "advance", amount: 500000, paidBefore: 0, paidToDate: 500000, balanceAfter: 1000000, invoiceTotal: 1500000, reference: "UTR 4528" });
-    expect(a.receiptNo).toMatch(/^RCT\/2026-27\/\d{4}$/);
+    it("starts with the whole total to receive", () => {
+      expect(inv.total).toBe(1500000);
+      expect(inv.clientEmail).toBe("thomas@example.com");
+      expect([inv.paid, inv.balance, inv.status]).toEqual([0, 1500000, "unpaid"]);
+    });
 
-    // Scenario B: a part payment.
-    const b = await pay(inv.id, "200000", { paidOn: "2026-09-10", method: "cheque" });
-    expect(b).toMatchObject({ stage: "part", paidBefore: 500000, paidToDate: 700000, balanceAfter: 800000 });
+    it("A: an initial advance", async () => {
+      r.a = await pay(inv.id, "500000", { paidOn: "2026-08-02", reference: "UTR 4528", notes: "Advance on signing" });
+      expect(r.a).toMatchObject({ stage: "advance", amount: 500000, paidBefore: 0, paidToDate: 500000, balanceAfter: 1000000, invoiceTotal: 1500000, reference: "UTR 4528" });
+      expect(r.a.receiptNo).toMatch(/^RCT\/2026-27\/\d{4}$/);
+    });
 
-    // Scenario C/E: any further installments, with paise.
-    const c = await pay(inv.id, "123456.78", { method: "upi" });
-    expect(c).toMatchObject({ stage: "part", paidBefore: 700000, paidToDate: 823456.78, balanceAfter: 676543.22 });
-    expect(new Set([a.receiptNo, b.receiptNo, c.receiptNo]).size).toBe(3);
-    expect((await getClientInvoice(w.a.owner, inv.id)).status).toBe("unpaid");
+    it("B: a part payment", async () => {
+      r.b = await pay(inv.id, "200000", { paidOn: "2026-09-10", method: "cheque" });
+      expect(r.b).toMatchObject({ stage: "part", paidBefore: 500000, paidToDate: 700000, balanceAfter: 800000 });
+    });
 
-    // Never more than the balance.
-    await expect(pay(inv.id, "676543.23")).rejects.toBeInstanceOf(ValidationError);
+    it("C/E: any further installment, with paise, and never more than the balance", async () => {
+      r.c = await pay(inv.id, "123456.78", { method: "upi" });
+      expect(r.c).toMatchObject({ stage: "part", paidBefore: 700000, paidToDate: 823456.78, balanceAfter: 676543.22 });
+      expect(new Set([r.a.receiptNo, r.b.receiptNo, r.c.receiptNo]).size).toBe(3);
+      expect((await getClientInvoice(w.a.owner, inv.id)).status).toBe("unpaid");
+      await expect(pay(inv.id, "676543.23")).rejects.toBeInstanceOf(ValidationError);
+    });
 
-    // Scenario D: the final payment clears it, and only then is the invoice paid.
-    const d = await pay(inv.id, "676543.22");
-    expect(d).toMatchObject({ stage: "final", paidToDate: 1500000, balanceAfter: 0 });
-    const paid = await getClientInvoice(w.a.owner, inv.id);
-    expect([paid.status, paid.paid, paid.balance, paid.receipts]).toEqual(["paid", 1500000, 0, 4]);
-    await expect(pay(inv.id, "1")).rejects.toThrow(/already paid in full/);
+    it("D: the final payment clears it, and only then is the invoice paid", async () => {
+      r.d = await pay(inv.id, "676543.22");
+      expect(r.d).toMatchObject({ stage: "final", paidToDate: 1500000, balanceAfter: 0 });
+      const paid = await getClientInvoice(w.a.owner, inv.id);
+      expect([paid.status, paid.paid, paid.balance, paid.receipts]).toEqual(["paid", 1500000, 0, 4]);
+      await expect(pay(inv.id, "1")).rejects.toThrow(/already paid in full/);
+    });
 
-    // The history and each receipt still show the invoice as it stood then.
-    const { entries } = await invoicePayments(w.a.owner, inv.id);
-    expect(entries.map((e) => [e.stage, e.balanceAfter])).toEqual([["advance", 1000000], ["part", 800000], ["part", 676543.22], ["final", 0]]);
-    const again = await getReceipt(w.a.owner, b.id);
-    expect(again.receipt).toMatchObject({ paidBefore: 500000, paidToDate: 700000, balanceAfter: 800000 });
-    expect(again.history.map((e) => e.id)).toEqual([a.id, b.id]);
-
-    // Income only: nothing reaches spend.
-    expect((await getSite(w.a.owner, siteId)).summary.spent).toBe(0);
+    it("keeps each receipt as the invoice stood then, and never counts as spend", async () => {
+      const { entries } = await invoicePayments(w.a.owner, inv.id);
+      expect(entries.map((e) => [e.stage, e.balanceAfter])).toEqual([["advance", 1000000], ["part", 800000], ["part", 676543.22], ["final", 0]]);
+      const again = await getReceipt(w.a.owner, r.b.id);
+      expect(again.receipt).toMatchObject({ paidBefore: 500000, paidToDate: 700000, balanceAfter: 800000 });
+      expect(again.history.map((e) => e.id)).toEqual([r.a.id, r.b.id]);
+      expect((await getSite(w.a.owner, siteId)).summary.spent).toBe(0);
+    });
   });
 
   it("returns the same receipt for a repeated submission, and never makes one by reading", async () => {
@@ -131,30 +144,39 @@ describe("client payments", () => {
     expect([after.paid, after.balance]).toEqual([500000, 1000000]);
   });
 
-  it("refunds part of a payment, never more than what's left of it", async () => {
-    const { inv } = await project("Partial Refund Site");
-    const a = await pay(inv.id, "500000");
+  describe("a partial refund", () => {
+    let inv: Awaited<ReturnType<typeof project>>["inv"];
+    let a: ClientReceipt;
     const refund = (paymentId: string, over: Record<string, unknown>) =>
       refundClientPayment(w.a.owner, { paymentId, paidOn: "2026-10-05", method: "bank", reason: "Scope reduced", clientKey: crypto.randomUUID(), ...over });
+    beforeAll(async () => {
+      ({ inv } = await project("Partial Refund Site"));
+      a = await pay(inv.id, "500000");
+    });
 
-    // A partial refund of the advance, then no more than what's left of it.
-    const r1 = await refund(a.id, { kind: "refund", amount: "50000" });
-    expect(r1).toMatchObject({ stage: "refund", paidBefore: 500000, paidToDate: 450000, balanceAfter: 1050000, related: { id: a.id } });
-    await expect(refund(a.id, { kind: "refund", amount: "450000.01" })).rejects.toBeInstanceOf(ValidationError);
-    await expect(refund(a.id, { kind: "reversal" })).rejects.toThrow(/already refunded/);
-    await expect(refund(a.id, { kind: "refund", amount: "10", paidOn: "2026-09-01" })).rejects.toBeInstanceOf(ValidationError);
-    await expect(refund(a.id, { kind: "refund", amount: "10", reason: " " })).rejects.toThrow();
+    it("gives back part of a payment as a linked record", async () => {
+      const r1 = await refund(a.id, { kind: "refund", amount: "50000" });
+      expect(r1).toMatchObject({ stage: "refund", paidBefore: 500000, paidToDate: 450000, balanceAfter: 1050000, related: { id: a.id } });
+      const { entries } = await invoicePayments(w.a.owner, inv.id);
+      expect(entries).toHaveLength(2);
+      expect(entries.find((e) => e.id === a.id)).toMatchObject({ amount: 500000, refunded: 50000, reversed: false, balanceAfter: 1000000 });
+      const after = await getClientInvoice(w.a.owner, inv.id);
+      expect([after.paid, after.balance]).toEqual([450000, 1050000]);
+    });
 
-    const { entries } = await invoicePayments(w.a.owner, inv.id);
-    expect(entries).toHaveLength(2);
-    expect(entries.find((e) => e.id === a.id)).toMatchObject({ amount: 500000, refunded: 50000, reversed: false, balanceAfter: 1000000 });
-    const after = await getClientInvoice(w.a.owner, inv.id);
-    expect([after.paid, after.balance]).toEqual([450000, 1050000]);
+    it("never gives back more than what's left, or reverses a part-refunded payment", async () => {
+      await expect(refund(a.id, { kind: "refund", amount: "450000.01" })).rejects.toBeInstanceOf(ValidationError);
+      await expect(refund(a.id, { kind: "reversal" })).rejects.toThrow(/already refunded/);
+    });
 
-    // Someone without finance on the site can't even see the payment.
-    await expect(
-      refundClientPayment(w.a.accountant, { paymentId: a.id, kind: "refund", amount: "10", paidOn: "2026-10-05", reason: "x", clientKey: crypto.randomUUID() }),
-    ).rejects.toBeInstanceOf(NotFoundError);
+    it("needs a date on or after the payment, a reason, and finance on the site", async () => {
+      await expect(refund(a.id, { kind: "refund", amount: "10", paidOn: "2026-09-01" })).rejects.toBeInstanceOf(ValidationError);
+      await expect(refund(a.id, { kind: "refund", amount: "10", reason: " " })).rejects.toThrow();
+      // The accountant has no role on this site, so the payment doesn't exist for them.
+      await expect(
+        refundClientPayment(w.a.accountant, { paymentId: a.id, kind: "refund", amount: "10", paidOn: "2026-10-05", reason: "x", clientKey: crypto.randomUUID() }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
   });
 
   it("keeps the ledger append-only", async () => {

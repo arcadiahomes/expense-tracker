@@ -244,30 +244,40 @@ export async function getReceipt(actor: Actor, id: string, conn: Conn = db) {
 }
 
 /**
- * The next number in the organization's series for the date's financial year:
- * RCT/2026-27/0007 for payments, RFD/2026-27/0002 for refunds and reversals.
- * Called under the organization's receipt lock.
+ * The next number in the organization's series for the date's financial year, as an SQL
+ * expression for the insert: RCT/2026-27/0007 for payments, RFD/2026-27/0002 for refunds
+ * and reversals. Used only after `lockReceiptSeries`: the insert is a later statement, so
+ * it sees every number committed before the lock was granted.
  */
-async function nextReceiptNumber(conn: Conn, orgId: string, series: "RCT" | "RFD", onDate: string) {
+function nextReceiptNumber(orgId: string, series: "RCT" | "RFD", onDate: string) {
   const prefix = `${series}/${financialYear(onDate)}/`;
-  const [row] = (await conn.execute(sql`
-    select coalesce(max(substring(receipt_number from '([0-9]+)$')::int), 0) + 1 as next
-    from client_payments
-    where organization_id = ${orgId} and receipt_number like ${`${prefix}%`}
-  `)) as unknown as { next: number }[];
-  return `${prefix}${String(row.next).padStart(4, "0")}`;
+  return sql`(
+    select ${prefix} || lpad(n::text, greatest(4, length(n::text)), '0')
+    from (
+      select coalesce(max(substring(receipt_number from '([0-9]+)$')::int), 0) + 1 as n
+      from client_payments where organization_id = ${orgId} and receipt_number like ${`${prefix}%`}
+    ) s
+  )`;
 }
 
-/** The entry already saved under this form submission, if any (a retry or a double tap). */
-async function byClientKey(conn: Conn, actor: Actor, clientKey: string | undefined) {
-  if (!clientKey) return null;
-  const [row] = await conn
-    .select({ id: clientPayments.id, siteId: clientPayments.siteId, invoiceId: clientPayments.invoiceId })
-    .from(clientPayments)
-    .where(and(eq(clientPayments.organizationId, actor.orgId), eq(clientPayments.clientKey, clientKey)))
-    .limit(1);
-  return row ?? null;
+/** Serializes numbering in the organization, so two entries saved together can't take the same number. */
+const lockReceiptSeries = (conn: Conn, orgId: string) => conn.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`receipt:${orgId}`}, 0))`);
+
+/**
+ * The entry already saved under this form submission (a retry or a double tap), as columns
+ * to select alongside other figures in one round trip: existing_id, existing_site, existing_invoice.
+ */
+function byClientKey(actor: Actor, clientKey: string | undefined) {
+  return sql`
+    left join lateral (
+      select e.id as existing_id, e.site_id as existing_site, e.invoice_id as existing_invoice from client_payments e
+      where e.organization_id = ${actor.orgId} and e.client_key = ${clientKey ?? null}::uuid
+    ) e on true
+  `;
 }
+
+type Existing = { existing_id: string | null; existing_site: string | null; existing_invoice: string | null };
+const existingOf = (r: Existing): Saved | null => (r.existing_id ? { id: r.existing_id, siteId: r.existing_site!, invoiceId: r.existing_invoice! } : null);
 
 const LABEL: Record<ReceiptStage, string> = { advance: "Advance payment", part: "Part payment", final: "Final payment", refund: "Refund", reversal: "Reversal" };
 
@@ -290,17 +300,21 @@ async function receive(actor: Actor, invoiceId: string, input: PaymentFields): P
   if (input.paidOn > today()) throw new ValidationError("The payment date can't be in the future.", { paidOn: "Pick today or earlier." });
   return db.transaction(async (tx) => {
     const inv = await lockInvoice(actor, invoiceId, tx);
-    const existing = await byClientKey(tx, actor, input.clientKey);
+    // In one round trip: a submission already saved under this key, and the invoice's
+    // figures with this payment (the whole balance when amount is "balance").
+    const amountIn = input.amount === "balance" ? null : input.amount;
+    const [state] = (await tx.execute(sql`
+      select e.*, t.paid::text as paid, (t.total - t.paid)::numeric(14, 2)::text as balance,
+             ${amountIn}::numeric > t.total - t.paid as over,
+             (t.total - t.paid - coalesce(${amountIn}::numeric, t.total - t.paid))::numeric(14, 2)::text as after
+      from (select ${invoiceTotalSql} as total, ${invoicePaidSql} as paid from client_invoices i where i.id = ${inv.id}) t
+      ${byClientKey(actor, input.clientKey)}
+    `)) as unknown as (Existing & { paid: string; balance: string; over: boolean | null; after: string })[];
+    const existing = existingOf(state);
     if (existing) return existing;
+    const { paid, balance, over, after } = state;
     if (inv.cancelledAt) throw new ValidationError("This invoice is cancelled.");
     if (input.paidOn < inv.invoiceDate) throw new ValidationError("The payment date is before the invoice date.", { paidOn: "Pick the invoice date or later." });
-    const [{ total, paid }] = (await tx.execute(sql`
-      select ${invoiceTotalSql}::text as total, ${invoicePaidSql}::text as paid from client_invoices i where i.id = ${inv.id}
-    `)) as unknown as { total: string; paid: string }[];
-    const [{ balance, over }] = (await tx.execute(sql`
-      select (${total}::numeric - ${paid}::numeric)::numeric(14, 2)::text as balance,
-             ${input.amount === "balance" ? null : input.amount}::numeric > ${total}::numeric - ${paid}::numeric as over
-    `)) as unknown as { balance: string; over: boolean | null }[];
     if (num(balance) <= 0) throw new ValidationError("This invoice is already paid in full.");
     if (over) {
       const message = `That's more than the ${formatINR(num(balance))} still to receive on this invoice.`;
@@ -308,16 +322,15 @@ async function receive(actor: Actor, invoiceId: string, input: PaymentFields): P
     }
     const amount = input.amount === "balance" ? balance : input.amount;
 
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`receipt:${actor.orgId}`}, 0))`);
-    const receiptNumber = await nextReceiptNumber(tx, actor.orgId, "RCT", input.paidOn);
-    const [row] = await tx
+    await lockReceiptSeries(tx, actor.orgId);
+    const [{ id, receiptNumber }] = await tx
       .insert(clientPayments)
       .values({
         organizationId: actor.orgId,
         siteId: inv.siteId,
         invoiceId: inv.id,
         kind: "payment",
-        receiptNumber,
+        receiptNumber: nextReceiptNumber(actor.orgId, "RCT", input.paidOn),
         amount,
         paidOn: input.paidOn,
         method: input.method,
@@ -326,18 +339,17 @@ async function receive(actor: Actor, invoiceId: string, input: PaymentFields): P
         clientKey: input.clientKey ?? crypto.randomUUID(),
         createdBy: actor.userId,
       })
-      .returning({ id: clientPayments.id });
-    const [{ after }] = (await tx.execute(sql`select (${balance}::numeric - ${amount}::numeric)::numeric(14, 2)::text as after`)) as unknown as { after: string }[];
+      .returning({ id: clientPayments.id, receiptNumber: clientPayments.receiptNumber });
     const stage: ReceiptStage = num(after) <= 0 ? "final" : num(paid) <= 0 ? "advance" : "part";
     await audit(tx, actor, {
       siteId: inv.siteId,
       action: "payment.receive",
       entityType: "client_payment",
-      entityId: row.id,
+      entityId: id,
       summary: `Receipt ${receiptNumber}: ${formatINR(num(amount))} from ${inv.clientName} against invoice ${inv.invoiceNumber} (${LABEL[stage].toLowerCase()}, ${formatINR(num(after))} left)`,
       data: { invoiceId: inv.id, receiptNumber, amount, paidOn: input.paidOn, method: input.method, reference: input.reference, balanceBefore: balance, balanceAfter: after },
     });
-    return { id: row.id, siteId: inv.siteId, invoiceId: inv.id };
+    return { id, siteId: inv.siteId, invoiceId: inv.id };
   });
 }
 
@@ -373,14 +385,18 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
   const result = await db.transaction(async (tx) => {
     const inv = await lockInvoice(actor, target.invoiceId, tx);
     await requireSitePermission(actor, inv.siteId, "payment:refund", tx);
-    const existing = await byClientKey(tx, actor, input.clientKey);
-    if (existing) return existing;
+    // In one round trip: a submission already saved under this key, and what's left of the payment.
     const [pay] = (await tx.execute(sql`
-      select p.kind, p.receipt_number, p.amount::text as amount, p.paid_on::text as paid_on,
-             coalesce((select sum(x.amount) from client_payments x where x.related_id = p.id), 0)::text as given_back,
-             (p.amount - coalesce((select sum(x.amount) from client_payments x where x.related_id = p.id), 0))::numeric(14, 2)::text as left_over
-      from client_payments p where p.id = ${input.paymentId}
-    `)) as unknown as { kind: ClientPaymentKind; receipt_number: string; amount: string; paid_on: string; given_back: string; left_over: string }[];
+      select e.*, p.kind, p.receipt_number, p.amount::text as amount, p.paid_on::text as paid_on,
+             g.given_back::text as given_back, (p.amount - g.given_back)::numeric(14, 2)::text as left_over,
+             ${input.amount ?? null}::numeric > p.amount - g.given_back as over
+      from client_payments p
+      cross join lateral (select coalesce(sum(x.amount), 0) as given_back from client_payments x where x.related_id = p.id) g
+      ${byClientKey(actor, input.clientKey)}
+      where p.id = ${input.paymentId}
+    `)) as unknown as (Existing & { kind: ClientPaymentKind; receipt_number: string; amount: string; paid_on: string; given_back: string; left_over: string; over: boolean | null })[];
+    const existing = existingOf(pay);
+    if (existing) return existing;
     if (pay.kind !== "payment") throw new ValidationError("Only a payment can be refunded or reversed.");
     if (input.paidOn < pay.paid_on) throw new ValidationError("That's before the payment was received.", { paidOn: "Pick the payment date or later." });
     if (num(pay.left_over) <= 0) throw new ValidationError(`Receipt ${pay.receipt_number} has already been given back in full.`);
@@ -389,24 +405,22 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
       if (num(pay.given_back) > 0) throw new ValidationError(`Part of receipt ${pay.receipt_number} was already refunded. Refund the rest instead of reversing it.`);
       amount = pay.amount;
     } else {
-      const [{ over }] = (await tx.execute(sql`select ${input.amount!}::numeric > ${pay.left_over}::numeric as over`)) as unknown as { over: boolean }[];
-      if (over) {
+      if (pay.over) {
         const message = `That's more than the ${formatINR(num(pay.left_over))} left of receipt ${pay.receipt_number}.`;
         throw new ValidationError(message, { amount: message });
       }
       amount = input.amount!;
     }
 
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`receipt:${actor.orgId}`}, 0))`);
-    const receiptNumber = await nextReceiptNumber(tx, actor.orgId, "RFD", input.paidOn);
-    const [row] = await tx
+    await lockReceiptSeries(tx, actor.orgId);
+    const [{ id, receiptNumber }] = await tx
       .insert(clientPayments)
       .values({
         organizationId: actor.orgId,
         siteId: inv.siteId,
         invoiceId: inv.id,
         kind: input.kind,
-        receiptNumber,
+        receiptNumber: nextReceiptNumber(actor.orgId, "RFD", input.paidOn),
         amount,
         paidOn: input.paidOn,
         method: input.method,
@@ -416,16 +430,16 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
         clientKey: input.clientKey,
         createdBy: actor.userId,
       })
-      .returning({ id: clientPayments.id });
+      .returning({ id: clientPayments.id, receiptNumber: clientPayments.receiptNumber });
     await audit(tx, actor, {
       siteId: inv.siteId,
       action: input.kind === "reversal" ? "payment.reverse" : "payment.refund",
       entityType: "client_payment",
-      entityId: row.id,
+      entityId: id,
       summary: `${input.kind === "reversal" ? "Reversed" : "Refunded"} ${formatINR(num(amount))} of receipt ${pay.receipt_number} (${receiptNumber}), invoice ${inv.invoiceNumber}: ${input.reason}`,
       data: { invoiceId: inv.id, paymentId: input.paymentId, receiptNumber, amount, paidOn: input.paidOn, method: input.method, reference: input.reference, reason: input.reason },
     });
-    return { id: row.id, siteId: inv.siteId, invoiceId: inv.id };
+    return { id, siteId: inv.siteId, invoiceId: inv.id };
   });
   return saved(result);
 }
