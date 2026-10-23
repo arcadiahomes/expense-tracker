@@ -2,10 +2,11 @@ import "server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { expenseCategories, organizationMembers, organizations } from "@/db/schema";
-import { CATEGORIES } from "@/lib/types";
-import type { Actor } from "../authz";
+import { CATEGORIES, type OrganizationProfile } from "@/lib/types";
+import { requireOrgAdmin, type Actor } from "../authz";
 import { NotFoundError } from "../errors";
-import { uuid } from "../validation";
+import { organizationProfileInput, uuid } from "../validation";
+import { audit } from "./audit";
 import type { Conn } from "./shared";
 
 const CATEGORY_NAMES = {
@@ -51,4 +52,28 @@ export async function selectOrganization(actor: Actor, organizationId: string) {
     .where(and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.userId, actor.userId)))
     .returning({ id: organizationMembers.organizationId });
   if (rows.length === 0) throw new NotFoundError("Organization");
+}
+
+/** The company's name and contact details, as printed on invoices and receipts. */
+export async function organizationProfile(actor: Actor, conn: Conn = db): Promise<OrganizationProfile> {
+  const [org] = await conn
+    .select({ name: organizations.name, address: organizations.address, phone: organizations.phone, email: organizations.email, website: organizations.website })
+    .from(organizations)
+    .where(eq(organizations.id, actor.orgId))
+    .limit(1);
+  return { name: org.name, address: org.address ?? "", phone: org.phone ?? "", email: org.email ?? "", website: org.website ?? "" };
+}
+
+/** Org owners and admins set the contact details; a blank field clears it. */
+export async function updateOrganizationProfile(actor: Actor, raw: unknown): Promise<OrganizationProfile> {
+  requireOrgAdmin(actor);
+  const input = organizationProfileInput.parse(raw);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(organizations)
+      .set({ address: input.address ?? null, phone: input.phone ?? null, email: input.email ?? null, website: input.website ?? null })
+      .where(eq(organizations.id, actor.orgId));
+    await audit(tx, actor, { action: "organization.profile", entityType: "organization", entityId: actor.orgId, summary: "Updated the company details on invoices and receipts", data: input });
+  });
+  return organizationProfile(actor);
 }

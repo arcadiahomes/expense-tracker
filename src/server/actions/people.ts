@@ -1,7 +1,7 @@
 "use server";
 
 import { createAccount, issuePasswordLink, setAccountActive, setAccountSites } from "../data/accounts";
-import { selectOrganization } from "../data/organizations";
+import { selectOrganization, updateOrganizationProfile } from "../data/organizations";
 import { removeSiteMember, setSiteMemberRole } from "../data/sites";
 import { run } from "./run";
 
@@ -31,4 +31,8 @@ export async function removeSiteMemberAction(siteId: string, userId: string) {
 
 export async function selectOrganizationAction(id: string) {
   return run((actor) => selectOrganization(actor, id));
+}
+
+export async function updateOrganizationProfileAction(input: unknown) {
+  return run((actor) => updateOrganizationProfile(actor, input));
 }

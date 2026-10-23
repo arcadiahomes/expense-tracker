@@ -10,8 +10,10 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { daysBetween, shiftDate } from "@/lib/dates";
 import { loadActor } from "@/server/authz";
 import { createBill, recordPayment } from "@/server/data/bills";
+import { recordClientPayment, refundClientPayment } from "@/server/data/client-payments";
 import { createExpense, reviewExpense } from "@/server/data/expenses";
-import { createOrganization } from "@/server/data/organizations";
+import { createClientInvoice } from "@/server/data/invoices";
+import { createOrganization, updateOrganizationProfile } from "@/server/data/organizations";
 import { addReceipt } from "@/server/data/receipts";
 import { today } from "@/server/data/shared";
 import { closeDb, db } from "./index";
@@ -293,6 +295,43 @@ async function main() {
     }
   }
   console.log(`  ${BILLS.length} bills with payments and receipts`);
+
+  // ---- Client invoices and receipts ----
+  await updateOrganizationProfile(owner, {
+    address: "2nd Floor, Infopark Road, Kakkanad, Kochi, Kerala 682042",
+    phone: "+91 98470 21356",
+    email: "accounts@arcadia.example",
+    website: "arcadia.example",
+  });
+  const project = await createClientInvoice(owner, {
+    siteId: siteId[SITES[0].id],
+    invoiceDate: shiftDate(t, -80),
+    dueDate: shiftDate(t, 20),
+    clientName: SITES[0].client ?? "Mr. Thomas Varghese",
+    clientAddress: "Kakkanad, Kochi 682030",
+    clientPhone: "+91 94470 55555",
+    items: [
+      { description: "Structure and finishing, as per agreement", quantity: "1", unit: "lot", unitPrice: "900000" },
+      { description: "Interiors: modular kitchen and wardrobes", quantity: "1", unit: "lot", unitPrice: "600000" },
+    ],
+  });
+  const receive = (invoiceId: string, amount: string, daysAgo: number, method: "bank" | "cheque" | "upi", reference: string, notes?: string) =>
+    recordClientPayment(owner, { invoiceId, amount, paidOn: shiftDate(t, -daysAgo), method, reference, notes, clientKey: crypto.randomUUID() });
+  await receive(project.id, "500000", 78, "bank", "NEFT-AX2231", "Advance on signing the agreement");
+  await receive(project.id, "200000", 40, "bank", "NEFT-AX5120", "Second installment after slab work");
+  const bounced = await receive(project.id, "150000", 12, "cheque", "Cheque 004512");
+  await refundClientPayment(owner, { paymentId: bounced.id, kind: "reversal", paidOn: shiftDate(t, -9), method: "cheque", reason: "Cheque 004512 returned unpaid", clientKey: crypto.randomUUID() });
+  const small = await createClientInvoice(owner, {
+    siteId: siteId[SITES[1].id],
+    invoiceDate: shiftDate(t, -30),
+    dueDate: shiftDate(t, -15),
+    clientName: SITES[1].client ?? "Client",
+    items: [{ description: "Design consultation and drawings", quantity: "1", unit: "lot", unitPrice: "75000" }],
+    gstPercent: "18",
+  });
+  await receive(small.id, "50000", 25, "upi", "UPI 6021 4410 8821");
+  await receive(small.id, "38500", 10, "upi", "UPI 6021 9932 1176", "Final payment");
+  console.log("  2 client invoices with receipts and a reversal");
 
   console.log("\nDemo sign-ins (password is SEED_DEMO_PASSWORD):");
   for (const p of PEOPLE) {

@@ -10,10 +10,10 @@ import { PageHeader } from "@/components/page-header";
 import { Field } from "@/components/expense-form-dialog";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { DateFormat, Language, NumberStyle, Settings } from "@/lib/types";
+import type { DateFormat, Language, NumberStyle, OrganizationProfile, Settings } from "@/lib/types";
 import { signOutAction } from "@/server/actions/auth";
 import { updatePreferencesAction } from "@/server/actions/preferences";
-import { selectOrganizationAction } from "@/server/actions/people";
+import { selectOrganizationAction, updateOrganizationProfileAction } from "@/server/actions/people";
 import { cn } from "@/lib/utils";
 
 const LANGUAGES: { value: Language; native: string; english: string }[] = [
@@ -43,7 +43,7 @@ const ROLE_LABEL = { owner: "Owner", admin: "Admin", member: "Member" } as const
 
 type Workspace = { id: string; name: string; role: keyof typeof ROLE_LABEL; active: boolean };
 
-export function SettingsView({ organizations }: { organizations: Workspace[] }) {
+export function SettingsView({ organizations, company }: { organizations: Workspace[]; company: OrganizationProfile | null }) {
   const { settings, today, org } = useSession();
   const { theme, setTheme } = useTheme();
   const mounted = useMounted();
@@ -109,6 +109,8 @@ export function SettingsView({ organizations }: { organizations: Workspace[] }) 
             </div>
           </form>
         </Section>
+
+        {company && <CompanySection company={company} />}
 
         <Section title="Language" description="Used for voice entry now. Screen translations are coming next.">
           <ChoiceGrid name="language" cols="sm:grid-cols-3">
@@ -188,6 +190,63 @@ export function SettingsView({ organizations }: { organizations: Workspace[] }) 
       </div>
 
     </>
+  );
+}
+
+/** The company's contact details on invoice and receipt PDFs. Org owners and admins only. */
+function CompanySection({ company }: { company: OrganizationProfile }) {
+  const initial = { address: company.address, phone: company.phone, email: company.email, website: company.website };
+  const [form, setForm] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, start] = useTransition();
+  const dirty = (Object.keys(form) as (keyof typeof form)[]).some((k) => form[k] !== saved[k]);
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  function save(e: FormEvent) {
+    e.preventDefault();
+    start(async () => {
+      const res = await updateOrganizationProfileAction(form);
+      if (!res.ok) {
+        setErrors(res.fieldErrors ?? {});
+        toast.error(res.error);
+        return;
+      }
+      setErrors({});
+      const next = { address: res.data.address, phone: res.data.phone, email: res.data.email, website: res.data.website };
+      setForm(next);
+      setSaved(next);
+      toast.success("Company details saved", { description: "New invoice and receipt PDFs will show them." });
+    });
+  }
+
+  return (
+    <Section title="Company details" description={`Printed under the ${company.name} name and logo on every invoice and receipt.`}>
+      <form onSubmit={save} noValidate className="grid gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Address" htmlFor="c-address" error={errors.address} optional>
+            <Input id="c-address" className="h-11" maxLength={300} value={form.address} onChange={(e) => set("address", e.target.value)} />
+          </Field>
+          <Field label="Phone" htmlFor="c-phone" error={errors.phone} optional>
+            <Input id="c-phone" type="tel" className="h-11" maxLength={30} value={form.phone} onChange={(e) => set("phone", e.target.value)} />
+          </Field>
+          <Field label="Email" htmlFor="c-email" error={errors.email} optional>
+            <Input id="c-email" type="email" className="h-11" maxLength={254} value={form.email} onChange={(e) => set("email", e.target.value)} />
+          </Field>
+          <Field label="Website" htmlFor="c-website" error={errors.website} optional>
+            <Input id="c-website" className="h-11" maxLength={120} placeholder="arcadiahomes.in" value={form.website} onChange={(e) => set("website", e.target.value)} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2">
+          {dirty && (
+            <Button type="button" variant="ghost" className="h-11" onClick={() => setForm(saved)}>
+              Discard
+            </Button>
+          )}
+          <Button type="submit" className="h-11 px-5" disabled={!dirty || saving}>{saving ? "Saving…" : "Save company details"}</Button>
+        </div>
+      </form>
+    </Section>
   );
 }
 

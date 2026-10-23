@@ -1,8 +1,9 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useTransition, type FormEvent } from "react";
-import { Ban, CircleCheck, Clock, Download, FileText, HardHat, OctagonAlert, Plus, ReceiptIndianRupee, Search, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useState, useTransition, type FormEvent } from "react";
+import { Ban, CircleCheck, Clock, Download, FileText, HandCoins, HardHat, OctagonAlert, Plus, ReceiptIndianRupee, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,16 +11,18 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { PAYMENT_OPTIONS } from "@/components/expense-form-dialog";
+import { methodLabel, PaymentForm, receiptPdfHref, StageBadge } from "@/components/client-payment-form";
 import { Field, Stat, qty, useSubmit } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
 import { SelectField } from "@/components/select-field";
 import { EmptyState } from "@/components/states";
 import { shiftDate } from "@/lib/dates";
+import { formatINRExact } from "@/lib/format";
 import { useFormat, useSession } from "@/lib/session";
-import type { ClientInvoice, InvoiceStatus, LabourInvoice, Page, PaymentMode } from "@/lib/types";
+import type { ClientInvoice, ClientReceipt, InvoiceStatus, LabourInvoice, Page } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { cancelInvoiceAction, createClientInvoiceAction, loadInvoicesAction, markInvoicePaidAction } from "@/server/actions/invoices";
+import { loadInvoicePaymentsAction } from "@/server/actions/client-payments";
+import { cancelInvoiceAction, createClientInvoiceAction, loadInvoicesAction } from "@/server/actions/invoices";
 import type { invoiceTotals } from "@/server/data/invoices";
 
 type SiteOption = { id: string; name: string; client: string };
@@ -50,8 +53,6 @@ const GST_OPTIONS = [
   { value: "18", label: "GST 18%" },
   { value: "28", label: "GST 28%" },
 ];
-
-const RECEIVED_OPTIONS = PAYMENT_OPTIONS.filter((o) => o.value !== "credit");
 
 /** The invoice's PDF; the route checks access again. */
 const pdfHref = (id: string) => `/api/invoices/client/${id}`;
@@ -188,7 +189,7 @@ function ClientInvoices({ page, totals, filter, query: initialQuery, sites, onCr
         <div className="p-4 sm:p-5">
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground"><CircleCheck className="size-4" aria-hidden /> Received</p>
           <p className="num font-display mt-1 text-xl font-bold sm:text-2xl">{fmt.money(totals.received)}</p>
-          <p className="text-xs text-muted-foreground">{totals.counts.paid} paid</p>
+          <p className="text-xs text-muted-foreground">{totals.counts.paid} paid in full · <Link href="/receipts" className="underline underline-offset-2 hover:text-foreground">receipts</Link></p>
         </div>
       </section>
 
@@ -243,7 +244,9 @@ function ClientInvoices({ page, totals, filter, query: initialQuery, sites, onCr
                     <span className="block truncate text-xs text-muted-foreground">{inv.invoiceNo}, {inv.siteName}</span>
                   </span>
                   <span className="num row-start-2 text-xs text-muted-foreground md:row-start-auto md:text-sm">
-                    {inv.status === "paid" && inv.paidOn ? `Received ${fmt.date(inv.paidOn)}` : `Due ${fmt.date(inv.dueDate)}`}
+                    {inv.status === "paid" && inv.paidOn
+                      ? `Received ${fmt.date(inv.paidOn)}`
+                      : `Due ${fmt.date(inv.dueDate)}${inv.paid > 0 && inv.status !== "cancelled" ? `, ${fmt.money(inv.balance)} left` : ""}`}
                   </span>
                   <span className="col-start-2 row-start-2 justify-self-end md:col-start-auto md:row-start-auto">
                     <StatusBadge status={inv.status} />
@@ -270,31 +273,17 @@ function ClientInvoices({ page, totals, filter, query: initialQuery, sites, onCr
 
 function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: () => void }) {
   const fmt = useFormat();
-  const { today } = useSession();
   const send = useSubmit();
   const [pending, start] = useTransition();
-  const [mode, setMode] = useState<"paid" | "cancel" | null>(null);
-  const [paid, setPaid] = useState({ paidOn: today, method: "bank" as PaymentMode, reference: "" });
+  const [mode, setMode] = useState<"pay" | "cancel" | null>(null);
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const payments = useInvoicePayments(invoice?.id, invoice?.paid);
 
   function reset() {
     setMode(null);
-    setPaid({ paidOn: today, method: "bank", reference: "" });
     setReason("");
     setErrors({});
-  }
-
-  function markPaid(e: FormEvent) {
-    e.preventDefault();
-    if (!invoice) return;
-    start(async () => {
-      const res = await send(() => markInvoicePaidAction({ id: invoice.id, ...paid, reference: paid.reference || undefined }), setErrors);
-      if (res) {
-        toast.success("Invoice marked as paid", { description: `${fmt.money(res.total)} from ${res.client}` });
-        reset();
-      }
-    });
   }
 
   function cancel(e: FormEvent) {
@@ -326,6 +315,8 @@ function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: 
                 <div><dt className="text-xs text-muted-foreground">Invoice date</dt><dd>{fmt.date(invoice.date)}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Due date</dt><dd className={cn(invoice.status === "overdue" && "text-over")}>{fmt.date(invoice.dueDate)}</dd></div>
                 {invoice.clientAddress && <div className="col-span-2"><dt className="text-xs text-muted-foreground">Address</dt><dd className="whitespace-pre-line">{invoice.clientAddress}</dd></div>}
+                {invoice.clientPhone && <div><dt className="text-xs text-muted-foreground">Phone</dt><dd className="num">{invoice.clientPhone}</dd></div>}
+                {invoice.clientEmail && <div className="min-w-0"><dt className="text-xs text-muted-foreground">Email</dt><dd className="truncate">{invoice.clientEmail}</dd></div>}
                 {invoice.clientGstin && <div><dt className="text-xs text-muted-foreground">Client GSTIN</dt><dd className="num">{invoice.clientGstin}</dd></div>}
                 <div><dt className="text-xs text-muted-foreground">Raised by</dt><dd>{invoice.createdBy}</dd></div>
               </dl>
@@ -346,17 +337,43 @@ function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: 
                   <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{fmt.money(invoice.subtotal)}</dd></div>
                   {invoice.gstPercent > 0 && <div className="flex justify-between"><dt className="text-muted-foreground">GST @ {invoice.gstPercent}%</dt><dd>{fmt.money(invoice.gst)}</dd></div>}
                   <div className="flex justify-between text-base font-semibold"><dt>Total</dt><dd>{fmt.money(invoice.total)}</dd></div>
+                  {invoice.status !== "cancelled" && (
+                    <>
+                      <div className="flex justify-between border-t pt-1"><dt className="text-muted-foreground">Amount paid</dt><dd className="text-good">{formatINRExact(invoice.paid)}</dd></div>
+                      <div className="flex justify-between font-semibold"><dt>Balance due</dt><dd>{formatINRExact(Math.max(invoice.balance, 0))}</dd></div>
+                    </>
+                  )}
                 </dl>
               </div>
 
               {invoice.notes && <p className="text-sm whitespace-pre-line text-muted-foreground">{invoice.notes}</p>}
               {invoice.status === "paid" && invoice.paidOn && (
                 <p className="rounded-lg bg-good/10 p-3 text-sm">
-                  Received on {fmt.date(invoice.paidOn)} by {RECEIVED_OPTIONS.find((o) => o.value === invoice.paidMethod)?.label ?? invoice.paidMethod}
+                  Paid in full. Last payment received on {fmt.date(invoice.paidOn)} by {invoice.paidMethod ? methodLabel(invoice.paidMethod) : "—"}
                   {invoice.paidReference && `, reference ${invoice.paidReference}`}.
                 </p>
               )}
               {invoice.status === "cancelled" && <p className="rounded-lg bg-muted p-3 text-sm">Cancelled: {invoice.cancelReason}</p>}
+
+              {payments && payments.length > 0 && (
+                <section aria-label="Payments received" className="rounded-xl border">
+                  <h3 className="px-3 pt-3 text-sm font-semibold">Payments received</h3>
+                  <ul className="mt-1 divide-y text-sm">
+                    {payments.map((p) => (
+                      <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <span className="min-w-0">
+                          <a href={receiptPdfHref(p.id)} className="num block truncate font-medium text-primary hover:underline">{p.receiptNo}</a>
+                          <span className="block truncate text-xs text-muted-foreground">{fmt.date(p.date)} · {methodLabel(p.method)}</span>
+                        </span>
+                        <span className="grid shrink-0 justify-items-end gap-1">
+                          <span className={cn("num font-medium", p.kind !== "payment" && "text-over")}>{p.kind === "payment" ? "" : "− "}{formatINRExact(p.amount)}</span>
+                          <StageBadge stage={p.stage} />
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
 
               <a href={pdfHref(invoice.id)} className={cn(buttonVariants(), "h-11 w-full")}>
                 <Download aria-hidden /> Download PDF
@@ -364,31 +381,21 @@ function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: 
 
               {open && mode === null && (
                 <div className="grid grid-cols-2 gap-2">
-                  <Button variant="outline" className="h-11" onClick={() => setMode("paid")}><CircleCheck aria-hidden /> Mark as paid</Button>
+                  <Button variant="outline" className="h-11" onClick={() => setMode("pay")}><HandCoins aria-hidden /> Record payment</Button>
                   <Button variant="outline" className="h-11 text-over" onClick={() => setMode("cancel")}><Ban aria-hidden /> Cancel invoice</Button>
                 </div>
               )}
 
-              {open && mode === "paid" && (
-                <form className="grid gap-3 rounded-xl bg-secondary/70 p-4" onSubmit={markPaid}>
-                  <p className="text-sm font-medium">Payment received in full</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field id="inv-paid-on" label="Received on" error={errors.paidOn}>
-                      <Input id="inv-paid-on" type="date" max={today} min={invoice.date} className="h-11" value={paid.paidOn} onChange={(e) => setPaid({ ...paid, paidOn: e.target.value })} />
-                    </Field>
-                    <Field id="inv-paid-method" label="Paid by" error={errors.method}>
-                      <SelectField id="inv-paid-method" value={paid.method} onChange={(m) => setPaid({ ...paid, method: m })} options={RECEIVED_OPTIONS} />
-                    </Field>
-                  </div>
-                  <Field id="inv-paid-ref" label="Reference (optional)" error={errors.reference}>
-                    <Input id="inv-paid-ref" className="h-11" placeholder="UTR or cheque number" value={paid.reference} onChange={(e) => setPaid({ ...paid, reference: e.target.value })} />
-                  </Field>
-                  <div className="flex justify-end gap-2">
-                    <Button type="button" variant="ghost" className="h-11" onClick={reset} disabled={pending}>Back</Button>
-                    <Button type="submit" className="h-11 px-5" disabled={pending}>{pending ? "Saving…" : "Mark as paid"}</Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Client payments are income: they aren&rsquo;t added to the site&rsquo;s expenses.</p>
-                </form>
+              {open && mode === "pay" && (
+                <div className="rounded-xl bg-secondary/40 p-4">
+                  <PaymentForm
+                    idPrefix="inv-pay"
+                    invoiceId={invoice.id}
+                    invoices={[{ id: invoice.id, invoiceNo: invoice.invoiceNo, date: invoice.date, client: invoice.client, siteName: invoice.siteName, total: invoice.total, paid: invoice.paid, balance: invoice.balance, overdue: invoice.status === "overdue" }]}
+                    onCancel={reset}
+                    onDone={reset}
+                  />
+                </div>
               )}
 
               {open && mode === "cancel" && (
@@ -396,7 +403,7 @@ function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: 
                   <Field id="inv-cancel-reason" label="Why cancel it?" error={errors.reason}>
                     <Textarea id="inv-cancel-reason" maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Wrong rate; reissued as a new invoice" />
                   </Field>
-                  <p className="text-xs text-muted-foreground">The invoice keeps its number and stays listed as cancelled. Issue a new one to correct it.</p>
+                  <p className="text-xs text-muted-foreground">The invoice keeps its number and stays listed as cancelled. Issue a new one to correct it. Money already received must be refunded or reversed first, on the Receipts page.</p>
                   <div className="flex justify-end gap-2">
                     <Button type="button" variant="ghost" className="h-11" onClick={reset} disabled={pending}>Back</Button>
                     <Button type="submit" variant="destructive" className="h-11 px-5" disabled={pending || !reason.trim()}>{pending ? "Cancelling…" : "Cancel invoice"}</Button>
@@ -409,6 +416,24 @@ function InvoiceSheet({ invoice, onClose }: { invoice?: ClientInvoice; onClose: 
       </SheetContent>
     </Sheet>
   );
+}
+
+/** The invoice's ledger entries, loaded when the sheet opens and again whenever what's paid changes. */
+function useInvoicePayments(invoiceId: string | undefined, paid: number | undefined) {
+  const [state, setState] = useState<{ key: string; entries: ClientReceipt[] } | null>(null);
+  const key = invoiceId ? `${invoiceId}:${paid}` : "";
+  useEffect(() => {
+    if (!invoiceId) return;
+    let live = true;
+    loadInvoicePaymentsAction(invoiceId).then(
+      (res) => live && res.ok && setState({ key: `${invoiceId}:${paid}`, entries: res.data.entries }),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [invoiceId, paid]);
+  return state?.key === key ? state.entries : null;
 }
 
 type ItemRow = { key: number; description: string; quantity: string; unit: string; unitPrice: string };
@@ -426,6 +451,8 @@ function NewInvoiceForm({ sites, onDone }: { sites: SiteOption[]; onDone: () => 
     siteId: first.id,
     clientName: first.client,
     clientAddress: "",
+    clientPhone: "",
+    clientEmail: "",
     clientGstin: "",
     invoiceNumber: "",
     invoiceDate: today,
@@ -488,6 +515,12 @@ function NewInvoiceForm({ sites, onDone }: { sites: SiteOption[]; onDone: () => 
         </Field>
         <Field id="inv-gstin" label="Client GSTIN (optional)" error={errors.clientGstin}>
           <Input id="inv-gstin" className="num h-11 uppercase" maxLength={15} value={form.clientGstin} onChange={(e) => set("clientGstin", e.target.value)} />
+        </Field>
+        <Field id="inv-phone" label="Client phone (optional)" error={errors.clientPhone}>
+          <Input id="inv-phone" type="tel" autoComplete="off" className="num h-11" maxLength={30} value={form.clientPhone} onChange={(e) => set("clientPhone", e.target.value)} />
+        </Field>
+        <Field id="inv-email" label="Client email (optional)" error={errors.clientEmail}>
+          <Input id="inv-email" type="email" autoComplete="off" className="h-11" maxLength={254} value={form.clientEmail} onChange={(e) => set("clientEmail", e.target.value)} />
         </Field>
         <Field id="inv-address" label="Client address (optional)" error={errors.clientAddress} className="sm:col-span-2">
           <Textarea id="inv-address" rows={2} maxLength={300} value={form.clientAddress} onChange={(e) => set("clientAddress", e.target.value)} />

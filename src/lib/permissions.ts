@@ -25,12 +25,13 @@ export type SitePermission =
   | "expense:approve" // approve, reject or reopen submitted expenses
   | "field:record" // attendance, material purchases and usage, labour payments
   | "expense:edit_any"
-  | "finance:manage" // budgets, bills, payments, deleting receipts
+  | "finance:manage" // budgets, bills, payments, deleting receipts, client invoices and receipts
+  | "payment:refund" // refund or reverse a client's payment
   | "report:export"
   | "audit:read"; // the site's activity log
 
 const PERMISSIONS: Record<SiteRole, readonly SitePermission[]> = {
-  owner: ["site:read", "site:manage", "expense:create", "expense:direct", "expense:approve", "field:record", "expense:edit_any", "finance:manage", "report:export", "audit:read"],
+  owner: ["site:read", "site:manage", "expense:create", "expense:direct", "expense:approve", "field:record", "expense:edit_any", "finance:manage", "payment:refund", "report:export", "audit:read"],
   accountant: ["site:read", "expense:create", "expense:direct", "field:record", "expense:edit_any", "finance:manage", "report:export", "audit:read"],
   engineer: ["site:read", "expense:create", "expense:direct", "field:record"],
   assistant: ["expense:create"],
