@@ -309,6 +309,14 @@ export const clientInvoiceInput = z
     dueDate: isoDate,
     clientName: trimmed(120, "Client name"),
     clientAddress: optionalText(300),
+    clientPhone: optionalText(30),
+    clientEmail: z
+      .string()
+      .trim()
+      .max(254)
+      .optional()
+      .transform((v) => v?.toLowerCase() || undefined)
+      .refine((v) => !v || z.email().safeParse(v).success, "Enter a valid email address."),
     clientGstin: z
       .string()
       .trim()
@@ -326,11 +334,15 @@ export const clientInvoiceInput = z
     path: ["items"],
   });
 
+const receivedBy = z.enum(PAYMENT_METHODS).refine((m) => m !== "credit", "Pick how the client paid.").default("bank");
+
+/** The invoice's whole remaining balance, received at once. */
 export const invoicePaidInput = z.object({
   id: uuid,
   paidOn: isoDate,
-  method: z.enum(PAYMENT_METHODS).refine((m) => m !== "credit", "Pick how the client paid.").default("bank"),
+  method: receivedBy,
   reference: optionalText(120),
+  clientKey: uuid.optional(),
 });
 
 export const invoiceCancelInput = z.object({ id: uuid, reason: trimmed(300, "Reason") });
@@ -341,6 +353,60 @@ export const invoiceFilters = pageInput.extend({
   siteId: uuid.optional(),
   status: z.enum(INVOICE_STATUSES).default("all"),
   q: optionalText(100),
+});
+
+// ---- Client payments (receipts) --------------------------------------------------
+
+/** Money received from the client against an invoice. `clientKey` makes a retried submit return the same receipt. */
+export const clientPaymentInput = z.object({
+  invoiceId: uuid,
+  amount: positiveMoney,
+  paidOn: isoDate,
+  method: receivedBy,
+  reference: optionalText(120),
+  notes: optionalText(500),
+  clientKey: uuid,
+});
+
+/** Money given back against one payment (refund, any part of it), or the whole payment undone (reversal). */
+export const clientRefundInput = z
+  .object({
+    paymentId: uuid,
+    kind: z.enum(["refund", "reversal"]),
+    amount: positiveMoney.optional(),
+    paidOn: isoDate,
+    method: receivedBy,
+    reference: optionalText(120),
+    reason: trimmed(500, "Reason"),
+    clientKey: uuid,
+  })
+  .refine((r) => r.kind === "reversal" || r.amount, { message: "Enter the amount refunded.", path: ["amount"] });
+
+export const RECEIPT_STAGES = ["all", "advance", "part", "final", "refund", "reversal"] as const;
+
+export const receiptFilters = pageInput
+  .extend({
+    siteId: uuid.optional(),
+    invoiceId: uuid.optional(),
+    stage: z.enum(RECEIPT_STAGES).default("all"),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    q: optionalText(100),
+  })
+  .refine((f) => !f.from || !f.to || f.from <= f.to, { message: "The start date is after the end date.", path: ["from"] });
+
+/** Company details printed on invoices and receipts. Blank clears a field. */
+export const organizationProfileInput = z.object({
+  address: optionalText(300),
+  phone: optionalText(30),
+  email: z
+    .string()
+    .trim()
+    .max(254)
+    .optional()
+    .transform((v) => v?.toLowerCase() || undefined)
+    .refine((v) => !v || z.email().safeParse(v).success, "Enter a valid email address."),
+  website: optionalText(120),
 });
 
 /** A worker's wage invoice for a period on one site, built from attendance and payments. */

@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
+  bigint,
   boolean,
   check,
   date,
@@ -14,6 +15,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { users } from "./auth";
@@ -546,6 +548,8 @@ export const clientInvoices = pgTable(
     clientName: text().notNull(),
     clientAddress: text(),
     clientGstin: text(),
+    clientPhone: text(),
+    clientEmail: text(),
     /** A rate the user entered (0 for none); the tax amount is worked out in SQL from the items. */
     gstPercent: numeric({ precision: 5, scale: 2 }).notNull().default("0"),
     notes: text(),
@@ -553,6 +557,10 @@ export const clientInvoices = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     createdAt: createdAt(),
+    /**
+     * Before client payments (migration 0015) an invoice was only ever paid in full, recorded
+     * here. Those payments were copied into client_payments; nothing reads or writes these now.
+     */
     paidOn: date({ mode: "string" }),
     paidMethod: paymentMethod(),
     paidReference: text(),
@@ -592,5 +600,64 @@ export const clientInvoiceItems = pgTable(
     index().on(t.invoiceId),
     check("client_invoice_items_quantity_positive", sql`${t.quantity} > 0`),
     check("client_invoice_items_unit_price_nonnegative", sql`${t.unitPrice} >= 0`),
+  ],
+);
+
+// ---- Client payments (receipts) ---------------------------------------------
+
+/**
+ * What a client paid against an invoice, or what was given back. Append-only: a trigger
+ * (migration 0016) refuses updates and direct deletes, so a mistake is corrected with a
+ * linked reversal, never by changing the record. Paid, balance and the invoice's "paid"
+ * status are all summed from here in SQL. Income only: nothing here touches expenses.
+ * - payment: money received; gets a receipt number (RCT/2026-27/0001).
+ * - refund: money given back against one payment, up to what's left of it.
+ * - reversal: the whole payment didn't happen (bounced cheque, entered twice); once per payment.
+ * Refunds and reversals get their own series (RFD/2026-27/0001) and name the payment in related_id.
+ */
+export const CLIENT_PAYMENT_KINDS = ["payment", "refund", "reversal"] as const;
+export const clientPaymentKind = pgEnum("client_payment_kind", CLIENT_PAYMENT_KINDS);
+
+export const clientPayments = pgTable(
+  "client_payments",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    /** Entry order. Each receipt's "paid before" and "balance after" are as of its own seq. */
+    seq: bigint({ mode: "number" }).generatedAlwaysAsIdentity().notNull().unique(),
+    organizationId: uuid()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: uuid()
+      .notNull()
+      .references(() => constructionSites.id, { onDelete: "cascade" }),
+    invoiceId: uuid()
+      .notNull()
+      .references(() => clientInvoices.id, { onDelete: "cascade" }),
+    kind: clientPaymentKind().notNull(),
+    receiptNumber: text().notNull(),
+    amount: money().notNull(),
+    paidOn: date({ mode: "string" }).notNull(),
+    method: paymentMethod().notNull(),
+    reference: text(),
+    notes: text(),
+    relatedId: uuid().references((): AnyPgColumn => clientPayments.id, { onDelete: "cascade" }),
+    /** Sent by the form that recorded it, so a retried or double submit returns the same receipt. */
+    clientKey: uuid().notNull(),
+    createdBy: text()
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique().on(t.organizationId, t.receiptNumber),
+    unique().on(t.organizationId, t.clientKey),
+    index().on(t.invoiceId, t.seq),
+    index().on(t.siteId, t.paidOn),
+    index().on(t.relatedId),
+    uniqueIndex("client_payments_one_reversal").on(t.relatedId).where(sql`kind = 'reversal'`),
+    check("client_payments_amount_positive", sql`${t.amount} > 0`),
+    check("client_payments_not_credit", sql`${t.method} <> 'credit'`),
+    check("client_payments_related", sql`(${t.kind} = 'payment') = (${t.relatedId} is null)`),
+    check("client_payments_refund_has_reason", sql`${t.kind} = 'payment' or length(btrim(${t.notes})) > 0`),
   ],
 );

@@ -11,6 +11,13 @@ export function formatINR(amount: number) {
   return inrFull.format(amount);
 }
 
+const inrPaise = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** ₹1,25,000, or ₹1,25,000.50 when there are paise: for receipts and balances, where every paisa counts. */
+export function formatINRExact(amount: number) {
+  return Math.round(amount * 100) % 100 === 0 ? inrFull.format(amount) : inrPaise.format(amount);
+}
+
 /** ₹1.25 L / ₹2.4 Cr — the way site teams talk about money. */
 export function formatINRCompact(amount: number) {
   const abs = Math.abs(amount);

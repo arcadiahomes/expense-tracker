@@ -38,6 +38,7 @@ const TABLES = [
   "password_links",
   "client_invoices",
   "client_invoice_items",
+  "client_payments",
 ];
 
 describe("migrations", () => {
@@ -53,7 +54,7 @@ describe("migrations", () => {
     try {
       await migrate(drizzle(client), { migrationsFolder: "drizzle" });
       const [{ n }] = await client`select count(*)::int as n from drizzle.__drizzle_migrations`;
-      expect(n).toBe(15);
+      expect(n).toBe(17);
     } finally {
       await client.end();
     }

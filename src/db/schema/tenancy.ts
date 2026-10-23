@@ -23,6 +23,11 @@ export const organizations = pgTable("organizations", {
   id: uuid().primaryKey().defaultRandom(),
   name: text().notNull(),
   slug: text().notNull().unique(),
+  /** Company details printed on invoices and receipts; all optional, set by an org owner or admin. */
+  address: text(),
+  phone: text(),
+  email: text(),
+  website: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

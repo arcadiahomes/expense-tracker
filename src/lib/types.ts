@@ -144,19 +144,78 @@ export type ClientInvoice = {
   client: string;
   clientAddress: string;
   clientGstin: string;
+  clientPhone: string;
+  clientEmail: string;
   gstPercent: number;
   subtotal: number;
   gst: number;
   total: number;
+  /** Payments less refunds and reversals, from client_payments. */
+  paid: number;
+  /** total − paid; the invoice is paid when this reaches 0. */
+  balance: number;
+  receipts: number;
   status: InvoiceStatus;
   notes: string;
   items: ClientInvoiceItem[];
+  /** The latest payment's details, once the invoice is paid. */
   paidOn?: string;
   paidMethod?: PaymentMode;
   paidReference?: string;
   cancelReason?: string;
   createdBy: string;
 };
+
+export type ClientPaymentKind = "payment" | "refund" | "reversal";
+/**
+ * What a receipt is, from the invoice's balance around it: the first payment that leaves a
+ * balance is an advance, later ones are part payments, the one that clears it is final.
+ */
+export type ReceiptStage = "advance" | "part" | "final" | "refund" | "reversal";
+
+/** One entry in the client payments ledger. Every figure is summed in SQL as of this entry. */
+export type ClientReceipt = {
+  id: string;
+  receiptNo: string;
+  kind: ClientPaymentKind;
+  stage: ReceiptStage;
+  date: string;
+  method: PaymentMode;
+  reference: string;
+  notes: string;
+  amount: number;
+  invoiceId: string;
+  invoiceNo: string;
+  invoiceTotal: number;
+  siteId: string;
+  siteName: string;
+  client: string;
+  /** Net paid on the invoice before this entry, and including it. */
+  paidBefore: number;
+  paidToDate: number;
+  balanceAfter: number;
+  /** For a refund or reversal: the payment it gives back. */
+  related?: { id: string; receiptNo: string };
+  /** For a payment: refunded or reversed against it since, and whether it was reversed. */
+  refunded: number;
+  reversed: boolean;
+  createdBy: string;
+};
+
+/** Collections per site (project): invoiced, collected, given back and still to receive. */
+export type ProjectCollection = {
+  siteId: string;
+  siteName: string;
+  client: string;
+  invoices: number;
+  receipts: number;
+  value: number;
+  collected: number;
+  refunded: number;
+  outstanding: number;
+};
+
+export type OrganizationProfile = { name: string; address: string; phone: string; email: string; website: string };
 
 export type LabourInvoiceLine = {
   date: string;

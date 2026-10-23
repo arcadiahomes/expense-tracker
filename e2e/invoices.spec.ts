@@ -65,11 +65,45 @@ test("a client invoice is numbered, totalled on the server and downloads as a PD
   const file = await download;
   expect(file.suggestedFilename()).toMatch(/^invoice-inv-\d{4}-\d{2}-0001-mr-thomas-varghese\.pdf$/);
 
-  await sheet.getByRole("button", { name: "Mark as paid" }).click();
-  await sheet.getByLabel("Reference (optional)").fill("UTR123");
-  await sheet.getByRole("button", { name: "Mark as paid" }).click();
-  await expect(sheet.getByText(/Received on .*UTR123/)).toBeVisible();
+  // A part payment, then the rest: two receipts, and only then is the invoice paid.
+  await sheet.getByRole("button", { name: "Record payment" }).click();
+  await sheet.getByLabel("Amount received (₹)").fill("1000");
+  await expect(sheet.getByText("Advance payment")).toBeVisible();
+  await sheet.getByLabel("Transaction reference (optional)").fill("UTR111");
+  await sheet.getByRole("button", { name: "Record payment" }).click();
+  await expect(sheet.getByText(/RCT\/\d{4}-\d{2}\/0001/)).toBeVisible();
+  await expect(sheet.getByText("Balance due")).toBeVisible();
+  await sheet.getByRole("button", { name: "Record payment" }).click();
+  await sheet.getByRole("button", { name: "Full balance" }).click();
+  await expect(sheet.getByText("Final payment")).toBeVisible();
+  await sheet.getByLabel("Transaction reference (optional)").fill("UTR123");
+  await sheet.getByRole("button", { name: "Record payment" }).click();
+  await expect(sheet.getByText(/Last payment received on .*UTR123/)).toBeVisible();
   await shot("invoice-sheet");
+});
+
+test("receipts list every payment and download as PDFs", async () => {
+  await page.goto("/receipts");
+  await expect(page.getByRole("heading", { name: "Receipts" })).toBeVisible();
+  const totals = page.getByRole("region", { name: "Collection totals" });
+  await expect(totals.getByText("₹2,774").first()).toBeVisible();
+  const list = page.getByRole("region", { name: "Receipts" });
+  await expect(list.getByText(/RCT\/\d{4}-\d{2}\/0002/).first()).toBeVisible();
+  await shot("receipts");
+  await expectNoHorizontalOverflow(page);
+  await expectAccessible(page);
+
+  await list.getByText(/RCT\/\d{4}-\d{2}\/0001/).first().click();
+  const sheet = page.getByRole("dialog", { name: /RCT\/\d{4}-\d{2}\/0001/ });
+  await expect(sheet.getByText("Previously paid")).toBeVisible();
+  const download = page.waitForEvent("download");
+  await sheet.getByRole("link", { name: "Download PDF" }).click();
+  expect((await download).suggestedFilename()).toMatch(/^receipt-rct-\d{4}-\d{2}-0001-mr-thomas-varghese\.pdf$/);
+
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "By project" }).click();
+  await expect(page.getByRole("list", { name: "Projects" }).getByText("Invoice Site")).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("a labour invoice shows the worker's period and downloads as a PDF", async () => {
@@ -106,9 +140,10 @@ test("a labour invoice shows the worker's period and downloads as a PDF", async 
   expect((await download).suggestedFilename()).toMatch(/^labour-invoice-anu-krishnan-.*\.pdf$/);
 });
 
-test("the nav links to invoices", async () => {
+test("the nav links to invoices and receipts", async () => {
   await page.goto("/");
   const nav = page.getByRole("navigation", { name: "Main" });
   if (isMobile(page)) await nav.getByRole("button", { name: "More" }).click();
   await expect(page.getByRole("link", { name: "Invoices" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Receipts" })).toBeVisible();
 });

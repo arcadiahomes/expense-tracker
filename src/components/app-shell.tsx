@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   FileText,
+  HandCoins,
   HardHat,
   History,
   LayoutGrid,
@@ -41,7 +42,7 @@ type NavItem = { href: string; label: string; icon: LucideIcon };
 const NAV_GROUPS: { label: string; items: string[] }[] = [
   { label: "Overview", items: ["/", "/my", "/approvals"] },
   { label: "Operations", items: ["/sites", "/engineers", "/voice", "/materials", "/labour"] },
-  { label: "Finance", items: ["/reports", "/invoices", "/bills", "/suppliers", "/activity"] },
+  { label: "Finance", items: ["/reports", "/invoices", "/receipts", "/bills", "/suppliers", "/activity"] },
 ];
 
 const NAV: NavItem[] = [
@@ -53,6 +54,7 @@ const NAV: NavItem[] = [
   { href: "/voice", label: "Voice entry", icon: Mic },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/invoices", label: "Invoices", icon: ReceiptIndianRupee },
+  { href: "/receipts", label: "Receipts", icon: HandCoins },
   { href: "/bills", label: "Bills", icon: ReceiptText },
   { href: "/materials", label: "Materials", icon: Boxes },
   { href: "/labour", label: "Labour", icon: HardHat },
@@ -67,7 +69,7 @@ const ASSISTANT_NAV = ["/my", "/voice"];
 
 /**
  * What the user's roles allow. Activity is for site owners and accountants (and org admins),
- * Approvals for site owners, Invoices for site owners and accountants, My entries for anyone
+ * Approvals for site owners, Invoices and Receipts for site owners and accountants, My entries for anyone
  * whose entries need approval. Someone who is only an assistant engineer sees just their
  * entries and voice entry. Assistant engineers' accounts are managed by the admin (the
  * organization owner) only. (The server enforces all of this; hiding links only keeps the
@@ -87,7 +89,7 @@ function useVisibleNav() {
       (n.href !== "/approvals" || approves) &&
       (n.href !== "/my" || submits) &&
       (n.href !== "/engineers" || admin) &&
-      (n.href !== "/invoices" || invoices),
+      ((n.href !== "/invoices" && n.href !== "/receipts") || invoices),
   );
 }
 
@@ -206,12 +208,8 @@ function Sidebar() {
   const canWrite = useWritableSites().length > 0;
   return (
     <aside className="no-print sticky top-0 hidden h-dvh flex-col glass-bar border-r border-[var(--line)] px-3 py-5 text-sidebar-foreground md:flex">
-      <Link href="/" className="mb-8 flex items-center gap-3 px-1.5 md:justify-center lg:justify-start">
-        <Logo className="size-9 shrink-0" />
-        <span className="leading-tight md:sr-only lg:not-sr-only lg:block">
-          <span className="font-display block text-[1.0625rem] font-extrabold text-foreground">Arcadia Home</span>
-          <span className="block text-xs text-muted-foreground">Site expenses ERP</span>
-        </span>
+      <Link href="/" aria-label="Arcadia Home dashboard" className="mb-6 flex justify-center rounded-lg px-1.5">
+        <Logo className="size-10 shrink-0 lg:size-16" />
       </Link>
 
       <nav aria-label="Main" className="flex-1">
@@ -344,7 +342,7 @@ function MobileTopBar() {
     <header className="no-print sticky top-0 z-30 flex h-[calc(4rem+env(safe-area-inset-top))] items-center justify-between gap-2 glass-bar border-b border-[var(--line)] px-4 pt-[env(safe-area-inset-top)] md:hidden">
       <div className="flex min-w-0 items-center gap-2">
         <Link href="/" className="shrink-0" aria-label="Arcadia Home dashboard">
-          <Logo className="size-8" />
+          <Logo className="size-10" />
         </Link>
         <ActiveSiteChip />
       </div>

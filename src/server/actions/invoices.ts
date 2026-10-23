@@ -1,6 +1,7 @@
 "use server";
 
-import { cancelInvoice, createClientInvoice, listClientInvoices, markInvoicePaid } from "../data/invoices";
+import { markInvoicePaid } from "../data/client-payments";
+import { cancelInvoice, createClientInvoice, listClientInvoices } from "../data/invoices";
 import { run } from "./run";
 
 export async function createClientInvoiceAction(input: unknown) {

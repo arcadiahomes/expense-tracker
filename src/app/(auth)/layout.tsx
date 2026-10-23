@@ -4,14 +4,14 @@ export default function AuthLayout({ children }: LayoutProps<"/">) {
   return (
     <main className="grid min-h-dvh place-items-center px-4 py-10">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center gap-3">
-          <Logo className="size-10" />
-          <div className="leading-tight">
-            <p className="font-display text-lg font-extrabold">Arcadia Home</p>
-            <p className="text-xs text-muted-foreground">Site expenses ERP</p>
+        <div className="surface rounded-xl p-6">
+          {/* The mark is decorative in Logo, so the name is kept for screen readers. */}
+          <div className="mb-6 flex justify-center">
+            <Logo className="size-28 sm:size-32" />
+            <span className="sr-only">Arcadia Home</span>
           </div>
+          {children}
         </div>
-        <div className="surface rounded-xl p-6">{children}</div>
       </div>
     </main>
   );

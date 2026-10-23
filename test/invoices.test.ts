@@ -7,8 +7,8 @@ import {
   invoiceTotals,
   labourInvoice,
   listClientInvoices,
-  markInvoicePaid,
 } from "@/server/data/invoices";
+import { markInvoicePaid } from "@/server/data/client-payments";
 import { createWorker, labourBalances, recordAttendance, recordLabourPayment } from "@/server/data/labour";
 import { createSite, getSite } from "@/server/data/sites";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";

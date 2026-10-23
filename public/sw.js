@@ -6,7 +6,8 @@
  *   anything marked private or no-store. Financial data stays out of every cache.
  * - Offline navigations get the offline page; nothing pretends to have been saved.
  */
-const VERSION = "v1";
+// Bump when a cached file changes without a new name (e.g. /icons): activate drops older caches.
+const VERSION = "v2";
 const STATIC = `arcadia-static-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
 

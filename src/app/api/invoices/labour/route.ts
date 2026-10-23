@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import { labourInvoice } from "@/server/data/invoices";
+import { organizationProfile } from "@/server/data/organizations";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { hit, LIMITS } from "@/server/rate-limit";
 import { renderLabourInvoicePdf } from "@/server/reports/invoice-pdf";
@@ -23,7 +24,7 @@ export async function GET(req: Request) {
     if (err instanceof ForbiddenError) return new Response(err.message, { status: 403 });
     throw err;
   }
-  const body = await renderLabourInvoicePdf(invoice, actor.orgName, actor.name);
+  const body = await renderLabourInvoicePdf(invoice, await organizationProfile(actor), actor.name);
   const name = fileSlug("labour-invoice", invoice.worker.name, invoice.from, "to", invoice.to);
   return new Response(new Uint8Array(body), {
     headers: {

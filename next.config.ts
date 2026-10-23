@@ -5,8 +5,11 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   // pdfkit and exceljs read their own data files at runtime; keep them as plain Node requires.
   serverExternalPackages: ["pdfkit", "exceljs"],
-  // PDF reports embed these fonts, read from disk at request time.
-  outputFileTracingIncludes: { "/api/reports/**": ["./src/assets/fonts/**"] },
+  // PDF reports, invoices and receipts embed these fonts (and the mark), read from disk at request time.
+  outputFileTracingIncludes: {
+    "/api/reports/**": ["./src/assets/fonts/**"],
+    "/api/invoices/**": ["./src/assets/fonts/**", "./src/assets/arcadia-mark.png"],
+  },
   async headers() {
     return [
       {

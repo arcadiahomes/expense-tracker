@@ -6,7 +6,7 @@ import { formatINR } from "@/lib/format";
 import type { ClientInvoice, ClientInvoiceItem, InvoiceStatus, LabourInvoice, LabourInvoiceLine, Page, PaymentMode } from "@/lib/types";
 import { can, requireSitePermission, scopeSiteIds, siteRoleFor, type Actor } from "../authz";
 import { NotFoundError, ValidationError } from "../errors";
-import { clientInvoiceInput, invoiceCancelInput, invoiceFilters, invoicePaidInput, labourInvoiceInput, uuid } from "../validation";
+import { clientInvoiceInput, invoiceCancelInput, invoiceFilters, labourInvoiceInput, uuid } from "../validation";
 import { audit } from "./audit";
 import { decodeCursor, encodeCursor, num, rethrowUnique, today, type Conn } from "./shared";
 
@@ -14,7 +14,8 @@ import { decodeCursor, encodeCursor, num, rethrowUnique, today, type Conn } from
  * Two kinds of invoice, both for people with `finance:manage` on the site (owners, accountants):
  * - Client invoices: what the company bills its client. Stored, numbered per organization,
  *   never edited once issued (cancel and issue a new one). They are money owed *to* the
- *   company, so they never touch expenses, budgets or spend.
+ *   company, so they never touch expenses, budgets or spend. What the client has paid
+ *   against one is summed from client_payments (data/client-payments.ts).
  * - Labour invoices: a worker's wages for a period on a site. Built on request from attendance
  *   (earned) and labour payments (paid), with the same definitions as the labour balances,
  *   so nothing is stored that could drift from them.
@@ -32,11 +33,16 @@ type InvoiceRow = {
   client_name: string;
   client_address: string | null;
   client_gstin: string | null;
+  client_phone: string | null;
+  client_email: string | null;
   gst_percent: string;
   notes: string | null;
   subtotal: string;
   gst: string;
   total: string;
+  paid: string;
+  balance: string;
+  receipts: number;
   status: InvoiceStatus;
   paid_on: string | null;
   paid_method: PaymentMode | null;
@@ -46,22 +52,41 @@ type InvoiceRow = {
 };
 
 /**
+ * An invoice's total: the sum of its item amounts plus GST at the entered rate on that
+ * subtotal, rounded to paise. `i` is the client_invoices row in the surrounding query.
+ */
+export const invoiceTotalSql = sql`(
+  select (s.subtotal + round(s.subtotal * i.gst_percent / 100, 2))::numeric(14, 2)
+  from (select coalesce(sum(amount), 0) as subtotal from client_invoice_items where invoice_id = i.id) s
+)`;
+
+/** Net paid on invoice `i`: payments less refunds and reversals. */
+export const invoicePaidSql = sql`(
+  select coalesce(sum(case p.kind when 'payment' then p.amount else -p.amount end), 0)::numeric(14, 2)
+  from client_payments p where p.invoice_id = i.id
+)`;
+
+/**
  * Invoices with their totals and status, all worked out here: subtotal is the sum of item
- * amounts, GST is the entered rate on that subtotal rounded to paise, status follows the
- * recorded payment or cancellation and the due date.
+ * amounts, GST is the entered rate on that subtotal rounded to paise, paid is summed from
+ * client payments, and the invoice is paid once nothing is left to receive. Otherwise it's
+ * overdue past its due date (part paid or not), or unpaid.
  */
 export function invoicesQuery(siteIds: string[], onDate: string) {
   return sql`
     select i.id, i.site_id, cs.name as site_name, i.invoice_number, i.invoice_date::text as invoice_date,
-           i.due_date::text as due_date, i.client_name, i.client_address, i.client_gstin, i.gst_percent::text as gst_percent,
-           i.notes, t.subtotal::text as subtotal, t.gst::text as gst, (t.subtotal + t.gst)::text as total,
+           i.due_date::text as due_date, i.client_name, i.client_address, i.client_gstin, i.client_phone, i.client_email,
+           i.gst_percent::text as gst_percent, i.notes, t.subtotal::text as subtotal, t.gst::text as gst,
+           (t.subtotal + t.gst)::text as total, pay.paid::text as paid, (t.subtotal + t.gst - pay.paid)::text as balance,
+           pay.receipts,
            case
              when i.cancelled_at is not null then 'cancelled'
-             when i.paid_on is not null then 'paid'
+             when t.subtotal + t.gst - pay.paid <= 0 then 'paid'
              when i.due_date < ${onDate}::date then 'overdue'
              else 'unpaid'
            end as status,
-           i.paid_on::text as paid_on, i.paid_method, i.paid_reference, i.cancel_reason, u.name as created_by
+           last.paid_on::text as paid_on, last.method as paid_method, last.reference as paid_reference,
+           i.cancel_reason, u.name as created_by
     from client_invoices i
     join construction_sites cs on cs.id = i.site_id
     join users u on u.id = i.created_by
@@ -69,6 +94,17 @@ export function invoicesQuery(siteIds: string[], onDate: string) {
       select s.subtotal, round(s.subtotal * i.gst_percent / 100, 2)::numeric(14, 2) as gst
       from (select coalesce(sum(amount), 0)::numeric(14, 2) as subtotal from client_invoice_items where invoice_id = i.id) s
     ) t on true
+    left join lateral (
+      select coalesce(sum(case p.kind when 'payment' then p.amount else -p.amount end), 0)::numeric(14, 2) as paid,
+             count(*) filter (where p.kind = 'payment')::int as receipts
+      from client_payments p where p.invoice_id = i.id
+    ) pay on true
+    left join lateral (
+      select p.paid_on, p.method, p.reference from client_payments p
+      where p.invoice_id = i.id and p.kind = 'payment'
+        and not exists (select 1 from client_payments r where r.related_id = p.id and r.kind = 'reversal')
+      order by p.seq desc limit 1
+    ) last on t.subtotal + t.gst - pay.paid <= 0
     where i.site_id in ${siteIds}
   `;
 }
@@ -100,10 +136,15 @@ function toDto(r: InvoiceRow, items: Map<string, ClientInvoiceItem[]>): ClientIn
     client: r.client_name,
     clientAddress: r.client_address ?? "",
     clientGstin: r.client_gstin ?? "",
+    clientPhone: r.client_phone ?? "",
+    clientEmail: r.client_email ?? "",
     gstPercent: num(r.gst_percent),
     subtotal: num(r.subtotal),
     gst: num(r.gst),
     total: num(r.total),
+    paid: num(r.paid),
+    balance: num(r.balance),
+    receipts: Number(r.receipts),
     status: r.status,
     notes: r.notes ?? "",
     items: items.get(r.id) ?? [],
@@ -153,7 +194,11 @@ export async function listClientInvoices(actor: Actor, raw: unknown = {}): Promi
   };
 }
 
-/** Header figures and tab counts. Cancelled invoices are counted but never owed. */
+/**
+ * Header figures and tab counts. Outstanding and overdue are what's left to receive on
+ * open invoices (part payments taken off); received is net of refunds. Cancelled invoices
+ * are counted but never owed.
+ */
 export async function invoiceTotals(actor: Actor) {
   const siteIds = await scopeSiteIds(actor, null, db, "finance:manage");
   const empty = { outstanding: 0, overdueAmount: 0, overdueCount: 0, received: 0, counts: { all: 0, unpaid: 0, overdue: 0, paid: 0, cancelled: 0 } };
@@ -161,9 +206,9 @@ export async function invoiceTotals(actor: Actor) {
   const [r] = (await db.execute(sql`
     with i as (${invoicesQuery(siteIds, today())})
     select
-      coalesce(sum(i.total::numeric) filter (where i.status in ('unpaid', 'overdue')), 0) as outstanding,
-      coalesce(sum(i.total::numeric) filter (where i.status = 'overdue'), 0) as overdue_amount,
-      coalesce(sum(i.total::numeric) filter (where i.status = 'paid'), 0) as received,
+      coalesce(sum(i.balance::numeric) filter (where i.status in ('unpaid', 'overdue')), 0) as outstanding,
+      coalesce(sum(i.balance::numeric) filter (where i.status = 'overdue'), 0) as overdue_amount,
+      coalesce(sum(i.paid::numeric), 0) as received,
       count(*)::int as c_all,
       count(*) filter (where i.status = 'unpaid')::int as c_unpaid,
       count(*) filter (where i.status = 'overdue')::int as c_overdue,
@@ -237,6 +282,8 @@ export async function createClientInvoice(actor: Actor, raw: unknown): Promise<C
           clientName: input.clientName,
           clientAddress: input.clientAddress,
           clientGstin: input.clientGstin,
+          clientPhone: input.clientPhone,
+          clientEmail: input.clientEmail,
           gstPercent: input.gstPercent,
           notes: input.notes,
           createdBy: actor.userId,
@@ -264,45 +311,25 @@ export async function createClientInvoice(actor: Actor, raw: unknown): Promise<C
 }
 
 /** Locks the invoice and checks the actor manages finance on its site. */
-async function lockInvoice(actor: Actor, id: string, conn: Conn) {
+export async function lockInvoice(actor: Actor, id: string, conn: Conn) {
   const [row] = await conn.select().from(clientInvoices).where(eq(clientInvoices.id, id)).for("update");
   if (!row || row.organizationId !== actor.orgId) throw new NotFoundError("Invoice");
   await requireSitePermission(actor, row.siteId, "finance:manage", conn);
   return row;
 }
 
-/** Records that the client paid the invoice in full. Income only: no expense is created. */
-export async function markInvoicePaid(actor: Actor, raw: unknown): Promise<ClientInvoice> {
-  const input = invoicePaidInput.parse(raw);
-  if (input.paidOn > today()) throw new ValidationError("The payment date can't be in the future.", { paidOn: "Pick today or earlier." });
-  await db.transaction(async (tx) => {
-    const inv = await lockInvoice(actor, input.id, tx);
-    if (inv.cancelledAt) throw new ValidationError("This invoice is cancelled.");
-    if (inv.paidOn) throw new ValidationError("This invoice is already marked as paid.");
-    if (input.paidOn < inv.invoiceDate) throw new ValidationError("The payment date is before the invoice date.", { paidOn: "Pick the invoice date or later." });
-    await tx
-      .update(clientInvoices)
-      .set({ paidOn: input.paidOn, paidMethod: input.method, paidReference: input.reference ?? null, paidBy: actor.userId })
-      .where(eq(clientInvoices.id, inv.id));
-    await audit(tx, actor, {
-      siteId: inv.siteId,
-      action: "invoice.paid",
-      entityType: "client_invoice",
-      entityId: inv.id,
-      summary: `Invoice ${inv.invoiceNumber} marked as paid by ${inv.clientName}`,
-      data: input,
-    });
-  });
-  return getClientInvoice(actor, input.id);
-}
-
-/** Cancels an unpaid invoice. It stays listed (and keeps its number) with the reason. */
+/**
+ * Cancels an invoice nothing has been received against. It stays listed (and keeps its
+ * number) with the reason. Money received has to be refunded or reversed first, so the
+ * receipts never point at a cancelled invoice with money still on it.
+ */
 export async function cancelInvoice(actor: Actor, raw: unknown): Promise<ClientInvoice> {
   const input = invoiceCancelInput.parse(raw);
   await db.transaction(async (tx) => {
     const inv = await lockInvoice(actor, input.id, tx);
     if (inv.cancelledAt) throw new ValidationError("This invoice is already cancelled.");
-    if (inv.paidOn) throw new ValidationError("A paid invoice can't be cancelled.");
+    const [{ paid }] = (await tx.execute(sql`select ${invoicePaidSql}::text as paid from client_invoices i where i.id = ${inv.id}`)) as unknown as { paid: string }[];
+    if (num(paid) > 0) throw new ValidationError(`${formatINR(num(paid))} has been received against this invoice. Refund or reverse it before cancelling.`);
     await tx
       .update(clientInvoices)
       .set({ cancelledAt: new Date(), cancelledBy: actor.userId, cancelReason: input.reason })

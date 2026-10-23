@@ -1,4 +1,5 @@
-import { getClientInvoice } from "@/server/data/invoices";
+import { invoicePayments } from "@/server/data/client-payments";
+import { organizationProfile } from "@/server/data/organizations";
 import { NotFoundError } from "@/server/errors";
 import { hit, LIMITS } from "@/server/rate-limit";
 import { renderClientInvoicePdf } from "@/server/reports/invoice-pdf";
@@ -12,14 +13,14 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/invoices/client
   const limit = await hit(`report:${actor.userId}`, LIMITS.reportDownload);
   if (!limit.allowed) return new Response("Too many downloads. Try again in a few minutes.", { status: 429, headers: { "Retry-After": String(limit.retryAfter) } });
   const { id } = await ctx.params;
-  let invoice;
+  let invoice, entries;
   try {
-    invoice = await getClientInvoice(actor, id);
+    ({ invoice, entries } = await invoicePayments(actor, id));
   } catch (err) {
     if (err instanceof NotFoundError) return new Response("Invoice not found.", { status: 404 });
     throw err;
   }
-  const body = await renderClientInvoicePdf(invoice, actor.orgName);
+  const body = await renderClientInvoicePdf(invoice, await organizationProfile(actor), entries);
   return new Response(new Uint8Array(body), {
     headers: {
       "Content-Type": "application/pdf",
