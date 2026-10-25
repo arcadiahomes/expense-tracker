@@ -11,11 +11,10 @@ import { audit } from "./audit";
 import { categoryId, enteredApproved, num, requireOpenSite, rethrowUnique, today, type Conn } from "./shared";
 
 /**
- * Labour has two sides that are never mixed:
- * - earned: attendance, priced on the server from the day rate (a liability, not spend);
- * - paid: labour expenses naming the worker, as wages or advances (the only spend).
- * A worker's balance on a site is earned minus paid. Positive: wages owed to them.
- * Negative: an advance they haven't worked off yet.
+ * The Labour page tracks payments only: each one is a labour expense naming the
+ * worker, and `labourTotals` sums them per worker. Attendance (earned wages) is no
+ * longer recorded from the page; older attendance still feeds balances, labour
+ * invoices and reports.
  */
 
 /** Org reference data may be written by org admins and anyone who records field work somewhere. */
@@ -317,6 +316,73 @@ export async function labourBalances(actor: Actor, siteId: string) {
   return { workers: list, totals };
 }
 
+export type WorkerTotal = {
+  workerId: string;
+  name: string;
+  trade: string | null;
+  active: boolean;
+  payments: number;
+  total: string;
+  thisMonth: string;
+  lastPaid: string | null;
+};
+
+/** One site's approved labour expenses that name a worker. */
+const paidLabour = (siteId: string) => sql`
+  select e.id, e.labour_worker_id as worker_id, e.expense_date, e.total_amount, e.labour_kind, e.payment_method, e.notes
+  from expenses e join expense_categories c on c.id = e.category_id
+  where e.site_id = ${siteId} and e.deleted_at is null and e.status = 'approved' and e.labour_worker_id is not null and c.code = 'labour'
+`;
+
+/**
+ * What each worker has been paid on one site, all time and this month, summed in SQL.
+ * Labour is tracked by payments only: every payment is a labour expense naming the worker.
+ */
+export async function labourTotals(actor: Actor, siteId: string) {
+  await requireSitePermission(actor, siteId, "site:read");
+  const month = `${today().slice(0, 7)}-01`;
+  const rows = (await db.execute(sql`
+    with p as (${paidLabour(siteId)})
+    select w.id, w.name, w.trade, w.active,
+           count(p.id)::int as payments,
+           coalesce(sum(p.total_amount), 0)::numeric(14, 2)::text as total,
+           coalesce(sum(p.total_amount) filter (where p.expense_date >= ${month}::date), 0)::numeric(14, 2)::text as this_month,
+           max(p.expense_date)::text as last_paid
+    from labour_workers w left join p on p.worker_id = w.id
+    where w.organization_id = ${actor.orgId}
+    group by w.id
+    having count(p.id) > 0 or w.active
+    order by coalesce(sum(p.total_amount), 0) desc, w.name
+  `)) as unknown as { id: string; name: string; trade: string | null; active: boolean; payments: number; total: string; this_month: string; last_paid: string | null }[];
+  const [totals] = (await db.execute(sql`
+    with p as (${paidLabour(siteId)})
+    select coalesce(sum(total_amount), 0)::numeric(14, 2)::text as total,
+           coalesce(sum(total_amount) filter (where expense_date >= ${month}::date), 0)::numeric(14, 2)::text as this_month,
+           count(distinct worker_id)::int as workers
+    from p
+  `)) as unknown as { total: string; this_month: string; workers: number }[];
+  return {
+    workers: rows.map((r): WorkerTotal => ({ workerId: r.id, name: r.name, trade: r.trade, active: r.active, payments: r.payments, total: r.total, thisMonth: r.this_month, lastPaid: r.last_paid })),
+    totals: { total: totals.total, thisMonth: totals.this_month, workers: totals.workers },
+  };
+}
+
+export type WorkerPayment = { id: string; date: string; kind: "wage" | "advance"; amount: string; method: string; note: string | null };
+
+/** One worker's payments on one site, newest first. */
+export async function workerPayments(actor: Actor, siteId: string, workerId: string) {
+  await requireSitePermission(actor, siteId, "site:read");
+  if (!uuid.safeParse(workerId).success) throw new NotFoundError("Worker");
+  const rows = (await db.execute(sql`
+    with p as (${paidLabour(siteId)})
+    select p.id::text, p.expense_date::text as date, coalesce(p.labour_kind::text, 'wage') as kind, p.total_amount::text as amount, p.payment_method::text as method, p.notes as note
+    from p join labour_workers w on w.id = p.worker_id
+    where p.worker_id = ${workerId} and w.organization_id = ${actor.orgId}
+    order by p.expense_date desc, p.id desc
+  `)) as unknown as WorkerPayment[];
+  return rows;
+}
+
 export type LedgerLine = {
   date: string;
   kind: "attendance" | "wage" | "advance";
@@ -353,14 +419,9 @@ export async function workerLedger(actor: Actor, siteId: string, workerId: strin
 
 // ---- Payments -------------------------------------------------------------------
 
-/** Serializes payments for one worker on one site, so two "pay all" taps can't both pay the balance. */
-const lockWorker = (conn: Conn, siteId: string, workerId: string) =>
-  conn.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`labour:${siteId}:${workerId}`}, 0))`);
-
 /**
- * Pays a worker: a labour expense that names them, as wages or an advance. Wages
- * can't exceed what they're owed; anything beyond that is an advance and must be
- * recorded as one, so a balance is never quietly pushed negative.
+ * Pays a worker: a labour expense that names them. There's no attendance to check it
+ * against; the payment itself is the record of what the worker was paid.
  */
 export async function recordLabourPayment(actor: Actor, raw: unknown) {
   const input = labourPaymentInput.parse(raw);
@@ -375,15 +436,6 @@ export async function recordLabourPayment(actor: Actor, raw: unknown) {
       .where(and(eq(labourWorkers.id, input.workerId), eq(labourWorkers.organizationId, actor.orgId)))
       .limit(1);
     if (!worker) throw new NotFoundError("Worker");
-    await lockWorker(tx, input.siteId, input.workerId);
-    const [bal] = (await tx.execute(balancesQuery(input.siteId, actor.orgId, input.workerId))) as unknown as BalanceRow[];
-    const owed = Math.max(toPaise(bal?.balance) ?? 0, 0);
-    if (input.kind === "wage" && toPaise(input.amount)! > owed) {
-      const message = owed
-        ? `${worker.name} is owed ${formatINR(owed / 100)} on this site. Pay that as wages and record the rest as an advance.`
-        : `${worker.name} isn't owed wages on this site. Record this as an advance, or mark their attendance first.`;
-      throw new ValidationError(message, { amount: message });
-    }
 
     const label = input.kind === "advance" ? "Advance" : "Wages";
     const [exp] = await tx

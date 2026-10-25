@@ -22,7 +22,7 @@ export default function manifest(): MetadataRoute.Manifest {
     ],
     shortcuts: [
       { name: "Log by voice", short_name: "Voice", url: "/voice", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
-      { name: "Mark attendance", short_name: "Attendance", url: "/labour", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
+      { name: "Pay labour", short_name: "Labour", url: "/labour", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
       { name: "Materials", url: "/materials", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
     ],
   };

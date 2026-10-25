@@ -6,11 +6,13 @@ import { createExpense, deleteExpense } from "@/server/data/expenses";
 import {
   createWorker,
   labourBalances,
+  labourTotals,
   recordAttendance,
   recordAttendanceBatch,
   recordLabourPayment,
   updateWorker,
   workerLedger,
+  workerPayments,
 } from "@/server/data/labour";
 import { createSite } from "@/server/data/sites";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
@@ -89,13 +91,11 @@ describe("wages, advances and balances", () => {
     expect([a.days, a.earned, a.wagesPaid, a.advances, a.unpaid]).toEqual(["1", "900.00", "0.00", "0.00", "900.00"]);
   });
 
-  it("won't pay more wages than are owed; the rest must be an advance", async () => {
+  it("pays wages without needing attendance; credit isn't a payment method", async () => {
     const pay = { siteId: site, workerId: anu, paidOn: "2026-10-20", method: "cash" };
-    await expect(recordLabourPayment(w.a.owner, { ...pay, kind: "wage", amount: "1000" })).rejects.toBeInstanceOf(ValidationError);
     expect((await recordLabourPayment(w.a.owner, { ...pay, kind: "wage", amount: "900" })).unpaid).toBe("0.00");
     const after = await recordLabourPayment(w.a.owner, { ...pay, kind: "advance", amount: "500" });
     expect([after.balance, after.unpaid, after.advanceOutstanding]).toEqual(["-500.00", "0.00", "500.00"]);
-    await expect(recordLabourPayment(w.a.owner, { ...pay, kind: "wage", amount: "1" })).rejects.toBeInstanceOf(ValidationError);
     await expect(recordLabourPayment(w.a.owner, { ...pay, kind: "advance", amount: "1", method: "credit" })).rejects.toThrow();
   });
 
@@ -121,14 +121,6 @@ describe("wages, advances and balances", () => {
     expect(Number(before.balance) - Number(res.balance)).toBe(100);
     await deleteExpense(w.a.owner, res.expenseId);
     expect((await balance(akhil)).balance).toBe(before.balance);
-  });
-
-  it("two simultaneous 'pay all' taps pay once", async () => {
-    const owed = (await balance(akhil)).unpaid;
-    const pay = () => recordLabourPayment(w.a.owner, { siteId: site, workerId: akhil, kind: "wage", amount: owed, paidOn: "2026-10-20", method: "cash" });
-    const results = await Promise.allSettled([pay(), pay()]);
-    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
-    expect((await balance(akhil)).unpaid).toBe("0.00");
   });
 
   it("payments need the site permission", async () => {
@@ -161,5 +153,28 @@ describe("workers", () => {
     expect(audit).toHaveLength(1);
     await expect(updateWorker(w.a.viewer, { id: anu, name: "Anu" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(updateWorker(w.b.owner, { id: anu, name: "Anu" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("worker totals", () => {
+  it("sum each worker's payments on the site, with no attendance needed", async () => {
+    const s = (await createSite(w.a.owner, { name: "Totals Site", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const pay = { siteId: s, kind: "wage", method: "cash" };
+    await recordLabourPayment(w.a.owner, { ...pay, workerId: anu, amount: "1500", paidOn: "2026-09-28" });
+    await recordLabourPayment(w.a.owner, { ...pay, workerId: anu, amount: "700", paidOn: "2026-10-05" });
+    await recordLabourPayment(w.a.owner, { ...pay, workerId: akhil, amount: "400", paidOn: "2026-10-06", note: "Shuttering" });
+    const gone = await recordLabourPayment(w.a.owner, { ...pay, workerId: akhil, amount: "999", paidOn: "2026-10-06" });
+    await deleteExpense(w.a.owner, gone.expenseId);
+
+    const t = await labourTotals(w.a.owner, s);
+    expect(t.totals).toEqual({ total: "2600.00", thisMonth: "1100.00", workers: 2 });
+    const paid = t.workers.filter((x) => x.payments > 0).map((x) => [x.name, x.payments, x.total, x.thisMonth, x.lastPaid]);
+    expect(paid).toEqual([
+      ["Anu", 2, "2200.00", "700.00", "2026-10-05"],
+      ["Akhil", 1, "400.00", "400.00", "2026-10-06"],
+    ]);
+    expect((await workerPayments(w.a.owner, s, akhil)).map((p) => [p.date, p.amount, p.note])).toEqual([["2026-10-06", "400.00", "Shuttering"]]);
+    await expect(labourTotals(w.a.eng2, s)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(workerPayments(w.a.eng2, s, anu)).rejects.toBeInstanceOf(NotFoundError);
   });
 });
