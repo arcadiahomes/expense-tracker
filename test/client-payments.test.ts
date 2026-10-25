@@ -9,6 +9,7 @@ import {
   payableInvoices,
   projectCollections,
   recordClientPayment,
+  recordStandaloneReceipt,
   refundClientPayment,
 } from "@/server/data/client-payments";
 import { cancelInvoice, createClientInvoice, getClientInvoice, invoiceTotals } from "@/server/data/invoices";
@@ -276,5 +277,55 @@ describe("client payments", () => {
     expect((await renderReceiptPdf(doc, "Owner A")).subarray(0, 5).toString()).toBe("%PDF-");
     const { invoice, entries } = await invoicePayments(w.a.owner, inv.id);
     expect((await renderClientInvoicePdf(invoice, org, entries)).subarray(0, 5).toString()).toBe("%PDF-");
+  });
+});
+
+describe("standalone receipts", () => {
+  const general = (siteId: string, over: Record<string, unknown> = {}) =>
+    recordStandaloneReceipt(w.a.owner, { siteId, receivedFrom: "  Mrs. Leela Menon ", amount: "25000", paidOn: "2026-10-03", method: "upi", notes: "Token advance", clientKey: crypto.randomUUID(), ...over });
+
+  it("records money without an invoice in the same receipt series, once per submission", async () => {
+    const { siteId, inv } = await project("General Receipt Site");
+    const before = (await projectCollections(w.a.owner)).projects.find((x) => x.siteId === siteId)!;
+    const key = crypto.randomUUID();
+    const g = await general(siteId, { clientKey: key });
+    expect(g).toMatchObject({ stage: "general", kind: "payment", client: "Mrs. Leela Menon", amount: 25000, invoiceId: null, invoiceNo: null, invoiceTotal: null, balanceAfter: null, paidToDate: 25000 });
+    expect(g.receiptNo).toMatch(/^RCT\/2026-27\/\d{4}$/);
+    expect((await general(siteId, { clientKey: key })).id).toBe(g.id);
+
+    // It never touches the invoice or the project's collections.
+    expect(await getClientInvoice(w.a.owner, inv.id)).toMatchObject({ paid: 0, balance: 1500000 });
+    expect((await projectCollections(w.a.owner)).projects.find((x) => x.siteId === siteId)).toEqual(before);
+    expect((await listReceipts(w.a.owner, { siteId, stage: "general" })).items.map((r) => r.id)).toEqual([g.id]);
+    expect((await listReceipts(w.a.owner, { siteId, q: "leela" })).items.map((r) => r.id)).toEqual([g.id]);
+  });
+
+  it("needs a payer, finance access and a date no later than today", async () => {
+    const { siteId } = await project("General Receipt Rules");
+    await expect(general(siteId, { receivedFrom: "  " })).rejects.toThrow();
+    await expect(general(siteId, { paidOn: "2099-01-01" })).rejects.toBeInstanceOf(ValidationError);
+    await expect(recordStandaloneReceipt(w.a.eng1, { siteId: w.site1, receivedFrom: "X", amount: "10", paidOn: "2026-10-01", method: "cash", clientKey: crypto.randomUUID() })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(recordStandaloneReceipt(w.b.owner, { siteId, receivedFrom: "X", amount: "10", paidOn: "2026-10-01", method: "cash", clientKey: crypto.randomUUID() })).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("can be refunded and reversed like any payment, and renders as a PDF", async () => {
+    const { siteId } = await project("General Receipt Refunds");
+    const g = await general(siteId);
+    const refund = await refundClientPayment(w.a.owner, { paymentId: g.id, kind: "refund", amount: "5000", paidOn: "2026-10-04", method: "bank", reason: "Overpaid", clientKey: crypto.randomUUID() });
+    expect(refund).toMatchObject({ kind: "refund", stage: "refund", client: "Mrs. Leela Menon", invoiceId: null, paidBefore: 25000, paidToDate: 20000, balanceAfter: null, related: { id: g.id } });
+    expect(refund.receiptNo).toMatch(/^RFD\//);
+    await expect(refundClientPayment(w.a.owner, { paymentId: g.id, kind: "refund", amount: "20000.01", paidOn: "2026-10-04", method: "bank", reason: "Too much", clientKey: crypto.randomUUID() })).rejects.toBeInstanceOf(ValidationError);
+
+    const doc = await getReceipt(w.a.owner, refund.id);
+    expect(doc.invoice).toBeNull();
+    expect(doc.history.map((e) => e.id)).toEqual([g.id, refund.id]);
+    expect((await renderReceiptPdf(doc, "Owner A")).subarray(0, 5).toString()).toBe("%PDF-");
+    expect((await renderReceiptPdf(await getReceipt(w.a.owner, g.id))).subarray(0, 5).toString()).toBe("%PDF-");
+
+    const other = await general(siteId, { amount: "1000" });
+    const rev = await refundClientPayment(w.a.owner, { paymentId: other.id, kind: "reversal", paidOn: "2026-10-04", method: "upi", reason: "Entered twice", clientKey: crypto.randomUUID() });
+    expect(rev).toMatchObject({ amount: 1000, paidToDate: 0 });
+    // Each standalone receipt runs on its own: the first one's figures are unchanged.
+    expect((await getReceipt(w.a.owner, g.id)).receipt).toMatchObject({ paidToDate: 25000, refunded: 5000 });
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { CircleCheck, Flag, HandCoins, Undo2, Wallet } from "lucide-react";
+import { CircleCheck, Flag, HandCoins, ReceiptText, Undo2, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import { useSlowNotice } from "@/lib/network";
 import { useSession } from "@/lib/session";
 import type { ClientReceipt, PaymentMode, ReceiptStage } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { recordClientPaymentAction, refundClientPaymentAction } from "@/server/actions/client-payments";
+import { recordClientPaymentAction, recordStandaloneReceiptAction, refundClientPaymentAction } from "@/server/actions/client-payments";
 
 /** An invoice that still has something to receive, as the payment form needs it. */
 export type PayableInvoice = {
@@ -39,6 +39,7 @@ export const STAGE = {
   advance: { label: "Advance payment", icon: Wallet, className: "bg-primary/10 text-primary" },
   part: { label: "Part payment", icon: HandCoins, className: "bg-warn/12 text-warn" },
   final: { label: "Final payment", icon: CircleCheck, className: "bg-good/12 text-good" },
+  general: { label: "General receipt", icon: ReceiptText, className: "bg-secondary text-foreground" },
   refund: { label: "Refund", icon: Undo2, className: "bg-over/10 text-over" },
   reversal: { label: "Reversal", icon: Flag, className: "bg-over/10 text-over" },
 } as const satisfies Record<ReceiptStage, unknown>;
@@ -123,7 +124,7 @@ export function PaymentForm({
       );
       if (res) {
         toast.success(`Receipt ${res.receiptNo} created`, {
-          description: `${exact(res.amount)} from ${res.client}${res.balanceAfter > 0 ? `, ${exact(res.balanceAfter)} left` : ", invoice fully paid"}`,
+          description: `${exact(res.amount)} from ${res.client}${(res.balanceAfter ?? 0) > 0 ? `, ${exact(res.balanceAfter!)} left` : ", invoice fully paid"}`,
           action: { label: "Download", onClick: () => window.location.assign(receiptPdfHref(res.id)) },
         });
         onDone(res);
@@ -206,6 +207,100 @@ export function PaymentForm({
 }
 
 /**
+ * Records money received without an invoice (a token advance, a deposit, a one-off job) as a
+ * general receipt on one site, numbered in the same series as every other receipt. Like
+ * PaymentForm, its clientKey makes a retry return the same receipt.
+ */
+export function StandaloneReceiptForm({
+  sites,
+  onDone,
+  onCancel,
+}: {
+  sites: { id: string; name: string }[];
+  onDone: (receipt: ClientReceipt) => void;
+  onCancel: () => void;
+}) {
+  const { today } = useSession();
+  const send = useSubmit();
+  const [pending, start] = useTransition();
+  useSlowNotice(pending);
+  const [clientKey] = useState(() => crypto.randomUUID());
+  const [form, setForm] = useState({
+    siteId: sites.length === 1 ? sites[0].id : "",
+    receivedFrom: "",
+    amount: "",
+    paidOn: today,
+    method: "bank" as PaymentMode,
+    reference: "",
+    notes: "",
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
+  const amount = toPaise(form.amount);
+
+  function save(e: FormEvent) {
+    e.preventDefault();
+    if (!form.siteId) return setErrors({ siteId: "Pick the project this money is for." });
+    start(async () => {
+      const res = await send(
+        () =>
+          recordStandaloneReceiptAction({
+            ...form,
+            amount: form.amount.replace(/,/g, ""),
+            reference: form.reference || undefined,
+            notes: form.notes || undefined,
+            clientKey,
+          }),
+        setErrors,
+      );
+      if (res) {
+        toast.success(`Receipt ${res.receiptNo} created`, {
+          description: `${exact(res.amount)} from ${res.client}`,
+          action: { label: "Download", onClick: () => window.location.assign(receiptPdfHref(res.id)) },
+        });
+        onDone(res);
+      }
+    });
+  }
+
+  return (
+    <form className="grid gap-4" onSubmit={save} aria-busy={pending}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field id="gr-site" label="Project" error={errors.siteId}>
+          <SelectField id="gr-site" value={form.siteId || null} placeholder="Pick a project" onChange={(id) => set("siteId", id)} options={sites.map((s) => ({ value: s.id, label: s.name }))} />
+        </Field>
+        <Field id="gr-from" label="Received from" error={errors.receivedFrom}>
+          <Input id="gr-from" className="h-11" maxLength={200} autoComplete="off" placeholder="Name of the person or company" value={form.receivedFrom} onChange={(e) => set("receivedFrom", e.target.value)} />
+        </Field>
+        <Field id="gr-amount" label="Amount received (₹)" error={errors.amount}>
+          <Input id="gr-amount" inputMode="decimal" autoComplete="off" className="num h-11" placeholder="e.g. 25000" aria-invalid={!!errors.amount} value={form.amount} onChange={(e) => set("amount", e.target.value.replace(/[^\d.,]/g, ""))} />
+        </Field>
+        <Field id="gr-date" label="Received on" error={errors.paidOn}>
+          <Input id="gr-date" type="date" max={today} className="h-11" value={form.paidOn} onChange={(e) => set("paidOn", e.target.value)} />
+        </Field>
+        <Field id="gr-method" label="Payment method" error={errors.method}>
+          <SelectField id="gr-method" value={form.method} onChange={(m) => set("method", m)} options={RECEIVED_OPTIONS} />
+        </Field>
+        <Field id="gr-ref" label="Transaction reference (optional)" error={errors.reference}>
+          <Input id="gr-ref" className="h-11" maxLength={120} placeholder={form.method === "cheque" ? "Cheque number" : form.method === "cash" ? "Not needed for cash" : "UTR or UPI reference"} value={form.reference} onChange={(e) => set("reference", e.target.value)} />
+        </Field>
+        <Field id="gr-notes" label="What it's for (optional)" error={errors.notes} className="sm:col-span-2">
+          <Textarea id="gr-notes" rows={2} maxLength={500} placeholder="e.g. Token advance for kitchen work" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+        </Field>
+      </div>
+
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button type="button" variant="ghost" className="h-11" onClick={onCancel} disabled={pending}>Cancel</Button>
+        <Button type="submit" className="h-11 px-5" disabled={pending || !form.siteId || !form.receivedFrom.trim() || amount === null || amount <= 0}>
+          {pending ? "Saving…" : "Create receipt"}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">A general receipt isn&rsquo;t tied to an invoice, so it doesn&rsquo;t change any invoice balance or the project&rsquo;s collections. It&rsquo;s income: it isn&rsquo;t added to the site&rsquo;s expenses.</p>
+    </form>
+  );
+}
+
+/**
  * Gives money back against one payment as a new linked record: a refund (any part of what's
  * left of it) or a reversal (all of it, e.g. a bounced cheque). The original receipt stays.
  */
@@ -242,7 +337,7 @@ export function RefundForm({ payment, onDone, onCancel }: { payment: ClientRecei
       );
       if (res) {
         toast.success(`${res.kind === "reversal" ? "Reversal" : "Refund"} ${res.receiptNo} recorded`, {
-          description: `${exact(res.amount)} against ${payment.receiptNo}; ${exact(res.balanceAfter)} now to receive`,
+          description: `${exact(res.amount)} against ${payment.receiptNo}${res.balanceAfter === null ? "" : `; ${exact(res.balanceAfter)} now to receive`}`,
         });
         onDone(res);
       }

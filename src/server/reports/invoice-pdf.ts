@@ -11,7 +11,7 @@ import { cleanText } from "./safe";
  * Invoices and receipts → PDF (A4 portrait). Like the reports, every amount shown was
  * computed in SQL, user text is cleaned of control and bidi characters, and pdfkit writes
  * it as glyphs in embedded fonts (Carlito, Rachana for Malayalam). The first page carries
- * the Arcadia Home mark and the company's details, every page the brand bands and a
+ * the Arcadia Home mark (alone, without the company name) and the company's contact details, every page the brand bands and a
  * footer; blocks that don't fit move to a new page whole, and tables repeat their header,
  * so nothing is cut off when printed.
  */
@@ -113,23 +113,24 @@ function setup(title: string, org: OrganizationProfile) {
   };
   const rule = (y: number, color = LINE, lineWidth = 0.6, x = left, w = width) => doc.moveTo(x, y).lineTo(x + w, y).lineWidth(lineWidth).strokeColor(color).stroke();
 
-  /** The page header: green band, the mark, company name and details, and the document title. */
+  /** The page header: green band, the mark (no company name beside it), contact details, and the document title. */
   const letterhead = (docTitle: string, number?: string) => {
     doc.rect(0, 0, doc.page.width, 6).fill(BRAND);
     doc.rect(0, 6, doc.page.width, 2).fill(ACCENT);
     const top = doc.page.margins.top;
-    doc.image(loadLogo(), left, top, { fit: [50, 50] });
-    const tx = left + 60;
-    const tw = width * 0.58 - 60;
-    let y = text(org.name, tx, top + 1, { size: 17, bold: true, color: BRAND, width: tw });
+    const mark = 72;
+    doc.image(loadLogo(), left, top, { fit: [mark, mark] });
+    const tx = left + mark + 12;
+    const tw = width * 0.58 - mark - 12;
+    let y = top + 4;
     const contact = [org.phone, org.email, org.website].filter(Boolean).join("  ·  ");
-    if (org.address) y = text(org.address, tx, y + 1, { size: 8.5, color: MUTED, width: tw });
-    if (contact) y = text(contact, tx, y + 1, { size: 8.5, color: MUTED, width: tw });
+    if (org.address) y = text(org.address, tx, y, { size: 8.5, color: MUTED, width: tw }) + 1;
+    if (contact) y = text(contact, tx, y, { size: 8.5, color: MUTED, width: tw });
     const rx = left + width * 0.58;
     const rw = width * 0.42;
     let ry = text(docTitle.toUpperCase(), rx, top + 2, { size: 19, bold: true, color: INK, width: rw, align: "right", characterSpacing: 1.5 });
     if (number) ry = text(number, rx, ry + 1, { size: 10, bold: true, color: ACCENT, width: rw, align: "right" });
-    y = Math.max(y, ry, top + 50) + 12;
+    y = Math.max(y, ry, top + mark) + 12;
     rule(y, BRAND, 1.2);
     return y + 12;
   };
@@ -374,7 +375,7 @@ export async function renderClientInvoicePdf(inv: ClientInvoice, organization: O
     }
   }
   p.signatures(y, "Client's acknowledgement", `For ${org.name}`);
-  return p.footer(`${org.name} · Invoice ${inv.invoiceNo} · ${inv.client} · Thank you for your business`);
+  return p.footer(`Invoice ${inv.invoiceNo} · ${inv.client} · Thank you for your business`);
 }
 
 /** A short, stable reference for a site, printed as its project ID. */
@@ -384,19 +385,21 @@ export const STAGE_LABEL: Record<ReceiptStage, string> = {
   advance: "Advance Payment",
   part: "Part Payment",
   final: "Final Payment",
+  general: "General Receipt",
   refund: "Refund",
   reversal: "Payment Reversal",
 };
 
-const STAGE_COLOR: Record<ReceiptStage, string> = { advance: BRAND, part: AMBER, final: ACCENT, refund: RED, reversal: RED };
+const STAGE_COLOR: Record<ReceiptStage, string> = { advance: BRAND, part: AMBER, final: ACCENT, general: BRAND, refund: RED, reversal: RED };
 
 /**
- * One receipt: a payment (advance, part or final), or a refund or reversal of one. The
- * figures are the invoice as it stood when the entry was recorded; `history` is the
- * invoice's ledger up to and including it.
+ * One receipt: a payment (advance, part, final, or a general one without an invoice), or a
+ * refund or reversal of one. The figures are the invoice as it stood when the entry was
+ * recorded; `history` is the invoice's ledger (for a standalone receipt: the receipt and its
+ * refunds) up to and including it.
  */
 export async function renderReceiptPdf(
-  doc: { receipt: ClientReceipt; history: ClientReceipt[]; invoice: ClientInvoice; organization: OrganizationProfile },
+  doc: { receipt: ClientReceipt; history: ClientReceipt[]; invoice: ClientInvoice | null; organization: OrganizationProfile },
   preparedBy?: string,
 ): Promise<Buffer> {
   const { receipt: r, history, invoice: inv, organization: org } = doc;
@@ -408,7 +411,7 @@ export async function renderReceiptPdf(
   let y = p.letterhead(title, r.receiptNo);
   y = p.metaStrip(y, [
     { label: payment ? "Receipt date" : "Date", value: date(r.date) },
-    { label: "Invoice no.", value: r.invoiceNo },
+    { label: "Invoice no.", value: r.invoiceNo ?? "No invoice" },
     { label: "Payment method", value: METHOD[r.method] },
     { label: "Status", value: STAGE_LABEL[r.stage], color: STAGE_COLOR[r.stage] },
   ]);
@@ -416,12 +419,12 @@ export async function renderReceiptPdf(
   const half = width / 2 - 12;
   const from = p.block(
     payment ? "Received from" : "Paid to",
-    [inv.client, inv.clientAddress, inv.clientPhone && `Phone ${inv.clientPhone}`, inv.clientEmail, inv.clientGstin && `GSTIN ${inv.clientGstin}`],
+    inv ? [inv.client, inv.clientAddress, inv.clientPhone && `Phone ${inv.clientPhone}`, inv.clientEmail, inv.clientGstin && `GSTIN ${inv.clientGstin}`] : [r.client],
     left,
     y,
     half,
   );
-  const project = p.block("Project", [r.siteName, `Project ID ${projectId(r.siteId)}`, `Invoice ${r.invoiceNo} dated ${date(inv.date)}`], left + width / 2 + 12, y, half);
+  const project = p.block("Project", [r.siteName, `Project ID ${projectId(r.siteId)}`, inv ? `Invoice ${inv.invoiceNo} dated ${date(inv.date)}` : undefined], left + width / 2 + 12, y, half);
   y = Math.max(from, project) + 18;
 
   // The amount, large, with its words.
@@ -443,15 +446,22 @@ export async function renderReceiptPdf(
     ["Payment method", METHOD[r.method]],
     ["Transaction reference", r.reference || "Not applicable"],
     ...(r.related ? ([["Against receipt", r.related.receiptNo]] as [string, string][]) : []),
-    [payment ? "Description" : "Reason", r.notes || `Payment against invoice ${r.invoiceNo}`],
+    [payment ? "Description" : "Reason", r.notes || (inv ? `Payment against invoice ${inv.invoiceNo}` : "Payment received")],
   ];
-  const account = [
-    { label: "Total invoice amount", value: money(r.invoiceTotal), strong: true },
-    { label: "Previously paid", value: money(r.paidBefore) },
-    payment ? { label: "This payment", value: money(r.amount), color: ACCENT } : { label: r.kind === "refund" ? "Less this refund" : "Less this reversal", value: `− ${money(r.amount)}`, color: RED },
-    { label: "Total paid to date", value: money(r.paidToDate), strong: true },
-    { label: "Remaining balance", value: money(Math.max(r.balanceAfter, 0)), highlight: r.balanceAfter > 0 ? BRAND : ACCENT },
-  ];
+  const lessThis = { label: r.kind === "refund" ? "Less this refund" : "Less this reversal", value: `− ${money(r.amount)}`, color: RED };
+  // Without an invoice there's no balance: just what was received, net of refunds.
+  const account: { label: string; value: string; strong?: boolean; highlight?: string; color?: string }[] =
+    inv && r.invoiceTotal !== null && r.balanceAfter !== null
+      ? [
+          { label: "Total invoice amount", value: money(r.invoiceTotal), strong: true },
+          { label: "Previously paid", value: money(r.paidBefore) },
+          payment ? { label: "This payment", value: money(r.amount), color: ACCENT } : lessThis,
+          { label: "Total paid to date", value: money(r.paidToDate), strong: true },
+          { label: "Remaining balance", value: money(Math.max(r.balanceAfter, 0)), highlight: r.balanceAfter > 0 ? BRAND : ACCENT },
+        ]
+      : payment
+        ? [{ label: "Amount received", value: money(r.amount), highlight: BRAND }]
+        : [{ label: "Received before", value: money(r.paidBefore) }, lessThis, { label: "Net received", value: money(r.paidToDate), highlight: BRAND }];
   const dw = width - 270;
   const detailsH = details.reduce((t, [, v]) => t + 13 + p.height(v, dw, { size: 9.5 }) + 6, 16);
   y = p.ensure(y, Math.max(detailsH, p.summaryHeight(account) + 16));
@@ -471,24 +481,33 @@ export async function renderReceiptPdf(
   if (payment && r.reversed) y = text("This payment was later reversed; see the linked reversal record.", left, y, { size: 9, bold: true, color: RED, width }) + 8;
   else if (payment && r.refunded > 0) y = text(`${money(r.refunded)} of this payment was later refunded; see the linked refund records.`, left, y, { size: 9, bold: true, color: RED, width }) + 8;
 
-  y = p.ensure(y + 4, 70);
-  y = text("Payment history", left, y, { size: 11, bold: true, color: BRAND }) + 6;
-  y = p.table(
-    y,
-    [
-      { label: "Date", width: 15 },
-      { label: "Receipt no.", width: 21 },
-      { label: "Type", width: 20 },
-      { label: "Amount", width: 21, align: "right" },
-      { label: "Balance after", width: 23, align: "right" },
-    ],
-    history.map((e) => [date(e.date), e.receiptNo, STAGE_LABEL[e.stage], e.kind === "payment" ? money(e.amount) : `− ${money(e.amount)}`, money(Math.max(e.balanceAfter, 0))]),
-    "",
-  );
+  // A standalone receipt has a history only once something was given back against it.
+  if (inv || history.length > 1) {
+    y = p.ensure(y + 4, 70);
+    y = text("Payment history", left, y, { size: 11, bold: true, color: BRAND }) + 6;
+    y = p.table(
+      y,
+      [
+        { label: "Date", width: 15 },
+        { label: "Receipt no.", width: 21 },
+        { label: "Type", width: 20 },
+        { label: "Amount", width: 21, align: "right" },
+        { label: inv ? "Balance after" : "Net received", width: 23, align: "right" },
+      ],
+      history.map((e) => [
+        date(e.date),
+        e.receiptNo,
+        STAGE_LABEL[e.stage],
+        e.kind === "payment" ? money(e.amount) : `− ${money(e.amount)}`,
+        money(e.balanceAfter === null ? e.paidToDate : Math.max(e.balanceAfter, 0)),
+      ]),
+      "",
+    );
+  }
 
-  p.signatures(y, payment ? "Client's signature" : "Received by (client)", `For ${org.name}`);
+  p.signatures(y, payment ? (inv ? "Client's signature" : "Payer's signature") : inv ? "Received by (client)" : "Received by", `For ${org.name}`);
   return p.footer(
-    `${org.name} · ${title} ${r.receiptNo} · ${r.client}`,
+    `${title} ${r.receiptNo} · ${r.client}`,
     `Internal receipt, not a tax invoice · computer-generated${preparedBy ? ` · prepared by ${preparedBy}` : ""}`,
   );
 }
@@ -556,5 +575,5 @@ export async function renderLabourInvoicePdf(inv: LabourInvoice, organization: O
   }
 
   p.signatures(y, "Worker's signature", `For ${org.name}`);
-  return p.footer(`${org.name} · Labour invoice · ${inv.worker.name}`, `Internal statement, not a tax invoice · computer-generated · prepared by ${generatedBy}`);
+  return p.footer(`Labour invoice · ${inv.worker.name}`, `Internal statement, not a tax invoice · computer-generated · prepared by ${generatedBy}`);
 }

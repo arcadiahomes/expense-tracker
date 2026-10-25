@@ -1,10 +1,14 @@
 "use server";
 
-import { invoicePayments, listReceipts, recordClientPayment, refundClientPayment } from "../data/client-payments";
+import { invoicePayments, listReceipts, recordClientPayment, recordStandaloneReceipt, refundClientPayment } from "../data/client-payments";
 import { run } from "./run";
 
 export async function recordClientPaymentAction(input: unknown) {
   return run((actor) => recordClientPayment(actor, input));
+}
+
+export async function recordStandaloneReceiptAction(input: unknown) {
+  return run((actor) => recordStandaloneReceipt(actor, input));
 }
 
 export async function refundClientPaymentAction(input: unknown) {

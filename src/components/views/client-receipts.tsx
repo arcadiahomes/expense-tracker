@@ -2,14 +2,14 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
-import { Building2, ChevronDown, Download, FileText, History, Plus, Printer, ReceiptIndianRupee, Search, Undo2, X } from "lucide-react";
+import { Building2, ChevronDown, Download, FileText, History, Plus, Printer, ReceiptIndianRupee, ReceiptText, Search, Undo2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { methodLabel, PaymentForm, receiptPdfHref, RefundForm, STAGE, StageBadge, type PayableInvoice } from "@/components/client-payment-form";
+import { methodLabel, PaymentForm, receiptPdfHref, RefundForm, STAGE, StageBadge, StandaloneReceiptForm, type PayableInvoice } from "@/components/client-payment-form";
 import { Field } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
 import { SelectField } from "@/components/select-field";
@@ -80,6 +80,7 @@ export function ReceiptsView({
   const [switching, startSwitch] = useTransition();
   // null: closed; "": pick an invoice; an id: that invoice.
   const [recording, setRecording] = useState<string | null>(null);
+  const [general, setGeneral] = useState(false);
   const [receipt, setReceipt] = useState<ClientReceipt | null>(null);
   const [historyId, setHistoryId] = useState<string | null>(null);
   // Bumped after every write so an open history sheet reloads.
@@ -93,11 +94,16 @@ export function ReceiptsView({
     <>
       <PageHeader
         title="Receipts"
-        description="Record what clients pay against their invoices, hand them a receipt for every payment, and follow each project's balance."
+        description="Record what clients pay against their invoices, or anything received without one, hand them a receipt for every payment, and follow each project's balance."
         actions={
-          <Button className="h-11 px-4" onClick={() => record()} disabled={!payable.length}>
-            <Plus aria-hidden /> Record payment
-          </Button>
+          <>
+            <Button variant="outline" className="h-11 px-4" onClick={() => setGeneral(true)}>
+              <ReceiptText aria-hidden /> New receipt
+            </Button>
+            <Button className="h-11 px-4" onClick={() => record()} disabled={!payable.length}>
+              <Plus aria-hidden /> Record payment
+            </Button>
+          </>
         }
       />
 
@@ -125,7 +131,7 @@ export function ReceiptsView({
 
       <div aria-busy={switching} className={cn("transition-opacity", switching && "opacity-60")}>
         {tab === "receipts" ? (
-          <ReceiptList page={page} filters={filters} sites={sites} onOpen={setReceipt} onRecord={payable.length ? () => record() : undefined} />
+          <ReceiptList page={page} filters={filters} sites={sites} onOpen={setReceipt} onRecord={payable.length ? () => record() : undefined} onGeneral={() => setGeneral(true)} />
         ) : (
           <ProjectList projects={collections.projects} version={version} onHistory={setHistoryId} />
         )}
@@ -146,6 +152,26 @@ export function ReceiptsView({
               onCancel={() => setRecording(null)}
               onDone={(r) => {
                 setRecording(null);
+                setVersion((v) => v + 1);
+                setReceipt(r);
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={general} onOpenChange={setGeneral}>
+        <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl font-bold">New receipt</DialogTitle>
+            <DialogDescription>Money received without an invoice, such as a token advance or a deposit. It gets the next receipt number.</DialogDescription>
+          </DialogHeader>
+          {general && (
+            <StandaloneReceiptForm
+              sites={sites}
+              onCancel={() => setGeneral(false)}
+              onDone={(r) => {
+                setGeneral(false);
                 setVersion((v) => v + 1);
                 setReceipt(r);
               }}
@@ -193,7 +219,21 @@ function TotalCell({ label, value, hint, tone, strong }: { label: string; value:
 
 // ---- All receipts ----------------------------------------------------------------
 
-function ReceiptList({ page, filters, sites, onOpen, onRecord }: { page: Page<ClientReceipt>; filters: Filters; sites: SiteOption[]; onOpen: (r: ClientReceipt) => void; onRecord?: () => void }) {
+function ReceiptList({
+  page,
+  filters,
+  sites,
+  onOpen,
+  onRecord,
+  onGeneral,
+}: {
+  page: Page<ClientReceipt>;
+  filters: Filters;
+  sites: SiteOption[];
+  onOpen: (r: ClientReceipt) => void;
+  onRecord?: () => void;
+  onGeneral: () => void;
+}) {
   const fmt = useFormat();
   const { today } = useSession();
   const router = useRouter();
@@ -248,8 +288,13 @@ function ReceiptList({ page, filters, sites, onOpen, onRecord }: { page: Page<Cl
       <EmptyState
         icon={ReceiptIndianRupee}
         title="No receipts yet"
-        description={onRecord ? "Record the first payment against an invoice. Each payment gets its own numbered receipt to download, print or share." : "Raise a client invoice on the Invoices page first; payments are recorded against it."}
-        action={onRecord && <Button className="h-11 px-5" onClick={onRecord}><Plus aria-hidden /> Record payment</Button>}
+        description={`${onRecord ? "Record the first payment against an invoice" : "Raise a client invoice on the Invoices page to record payments against it"}, or create a receipt for money received without one. Each gets its own numbered receipt to download, print or share.`}
+        action={
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button variant="outline" className="h-11 px-5" onClick={onGeneral}><ReceiptText aria-hidden /> New receipt</Button>
+            {onRecord && <Button className="h-11 px-5" onClick={onRecord}><Plus aria-hidden /> Record payment</Button>}
+          </div>
+        }
       />
     );
   }
@@ -303,7 +348,7 @@ function ReceiptList({ page, filters, sites, onOpen, onRecord }: { page: Page<Cl
                       <span className="num block truncate text-xs text-muted-foreground">{r.receiptNo} · {fmt.date(r.date)}</span>
                     </span>
                     <span className={cn("num text-right font-semibold", r.kind !== "payment" && "text-over")}>{r.kind === "payment" ? "" : "− "}{exact(r.amount)}</span>
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">{r.siteName} · {r.invoiceNo}</span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{r.siteName} · {r.invoiceNo ?? "No invoice"}</span>
                     <span className="justify-self-end"><StageBadge stage={r.stage} /></span>
                   </button>
                 </li>
@@ -338,11 +383,11 @@ function ReceiptList({ page, filters, sites, onOpen, onRecord }: { page: Page<Cl
                         <span className="block truncate font-medium">{r.client}</span>
                         <span className="block truncate text-xs text-muted-foreground">{r.siteName}</span>
                       </td>
-                      <td className="num px-3 py-3 whitespace-nowrap text-muted-foreground">{r.invoiceNo}</td>
+                      <td className="num px-3 py-3 whitespace-nowrap text-muted-foreground">{r.invoiceNo ?? "No invoice"}</td>
                       <td className="px-3 py-3"><StageBadge stage={r.stage} /></td>
                       <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{methodLabel(r.method)}</td>
                       <td className={cn("num px-3 py-3 text-right font-semibold whitespace-nowrap", r.kind !== "payment" && "text-over")}>{r.kind === "payment" ? "" : "− "}{exact(r.amount)}</td>
-                      <td className="num px-5 py-3 text-right whitespace-nowrap text-muted-foreground">{exact(Math.max(r.balanceAfter, 0))}</td>
+                      <td className="num px-5 py-3 text-right whitespace-nowrap text-muted-foreground">{r.balanceAfter === null ? "–" : exact(Math.max(r.balanceAfter, 0))}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -390,13 +435,21 @@ function ReceiptSheet({ receipt, onClose, onHistory, onChanged }: { receipt: Cli
                   <p className={cn("num font-display text-3xl font-bold", payment ? "text-primary" : "text-over")}>{exact(r.amount)}</p>
                   <p className="text-xs text-muted-foreground">{fmt.date(r.date)} · {methodLabel(r.method)}{r.reference && ` · ${r.reference}`}</p>
                 </div>
-                <dl className="num grid gap-1.5 px-4 py-3 text-sm">
-                  <div className="flex justify-between"><dt className="text-muted-foreground">Invoice {r.invoiceNo}</dt><dd className="font-medium">{exact(r.invoiceTotal)}</dd></div>
-                  <div className="flex justify-between"><dt className="text-muted-foreground">Previously paid</dt><dd>{exact(r.paidBefore)}</dd></div>
-                  <div className="flex justify-between"><dt className="text-muted-foreground">{payment ? "This payment" : r.kind === "refund" ? "Less this refund" : "Less this reversal"}</dt><dd className={payment ? "text-good" : "text-over"}>{payment ? "" : "− "}{exact(r.amount)}</dd></div>
-                  <div className="flex justify-between border-t pt-1.5 font-medium"><dt>Total paid to date</dt><dd>{exact(r.paidToDate)}</dd></div>
-                  <div className="flex justify-between text-base font-semibold"><dt>Remaining balance</dt><dd>{exact(Math.max(r.balanceAfter, 0))}</dd></div>
-                </dl>
+                {r.invoiceTotal !== null && r.balanceAfter !== null ? (
+                  <dl className="num grid gap-1.5 px-4 py-3 text-sm">
+                    <div className="flex justify-between"><dt className="text-muted-foreground">Invoice {r.invoiceNo}</dt><dd className="font-medium">{exact(r.invoiceTotal)}</dd></div>
+                    <div className="flex justify-between"><dt className="text-muted-foreground">Previously paid</dt><dd>{exact(r.paidBefore)}</dd></div>
+                    <div className="flex justify-between"><dt className="text-muted-foreground">{payment ? "This payment" : r.kind === "refund" ? "Less this refund" : "Less this reversal"}</dt><dd className={payment ? "text-good" : "text-over"}>{payment ? "" : "− "}{exact(r.amount)}</dd></div>
+                    <div className="flex justify-between border-t pt-1.5 font-medium"><dt>Total paid to date</dt><dd>{exact(r.paidToDate)}</dd></div>
+                    <div className="flex justify-between text-base font-semibold"><dt>Remaining balance</dt><dd>{exact(Math.max(r.balanceAfter, 0))}</dd></div>
+                  </dl>
+                ) : (
+                  <dl className="num grid gap-1.5 px-4 py-3 text-sm">
+                    <div className="flex justify-between"><dt className="text-muted-foreground">Invoice</dt><dd>None (general receipt)</dd></div>
+                    {!payment && <div className="flex justify-between"><dt className="text-muted-foreground">Received before</dt><dd>{exact(r.paidBefore)}</dd></div>}
+                    <div className="flex justify-between text-base font-semibold"><dt>Net received</dt><dd>{exact(r.paidToDate)}</dd></div>
+                  </dl>
+                )}
               </div>
 
               {(r.notes || r.related || r.refunded > 0) && (
@@ -417,9 +470,11 @@ function ReceiptSheet({ receipt, onClose, onHistory, onChanged }: { receipt: Cli
                 <Button variant="outline" className="h-11" onClick={() => printReceipt(r.id)}>
                   <Printer aria-hidden /> Print
                 </Button>
-                <Button variant="outline" className="col-span-2 h-11" onClick={() => onHistory(r.invoiceId)}>
-                  <History aria-hidden /> Payment history for {r.invoiceNo}
-                </Button>
+                {r.invoiceId && (
+                  <Button variant="outline" className="col-span-2 h-11" onClick={() => onHistory(r.invoiceId!)}>
+                    <History aria-hidden /> Payment history for {r.invoiceNo}
+                  </Button>
+                )}
               </div>
 
               {givesBack && !refunding && (
@@ -530,7 +585,7 @@ function InvoiceHistorySheet({
                         <span className="num truncate text-sm font-medium">{e.receiptNo}</span>
                         <span className={cn("num text-right text-sm font-semibold", e.kind !== "payment" && "text-over")}>{e.kind === "payment" ? "" : "− "}{exact(e.amount)}</span>
                         <span className="truncate text-xs text-muted-foreground">{fmt.date(e.date)} · {methodLabel(e.method)}{e.reversed ? " · reversed" : ""}</span>
-                        <span className="num text-right text-xs text-muted-foreground">Balance {exact(Math.max(e.balanceAfter, 0))}</span>
+                        <span className="num text-right text-xs text-muted-foreground">Balance {exact(Math.max(e.balanceAfter ?? 0, 0))}</span>
                         <span className="col-span-2"><StageBadge stage={e.stage} /></span>
                       </button>
                     </li>
