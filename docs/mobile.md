@@ -76,7 +76,8 @@ Other limits:
   - Words outside its vocabulary may be missed or need correcting.
 - **Numbers** can come back as digits ("8000") or words ("എണ്ണായിരം", "eight thousand"). The parser handles common forms, including Indian lakh/crore and Malayalam compound numbers. Unusual phrasing should be checked.
 - **Names** of workers and suppliers are often misheard, especially in Malayalam script. A name the parser doesn't recognise is shown as new before saving.
-- Recognition **stops after a pause** or a browser time limit; tap the mic again to continue.
+- Browsers end recognition **after a pause** or a time limit. The app starts it again by itself until you tap Stop, or until a phrase comes back with nothing in it. On phones it listens one phrase at a time (`continuous` is off), because Chrome on Android repeats earlier words in `continuous` mode. Results are rebuilt from the whole result list on every event, and words not yet marked final still count, because Android often ends without marking the last words final. On phones the words show in the Stop bar as they're heard.
+- **Installed app (home screen):** before the first recording the app asks for the microphone itself (`getUserMedia`, and the stream is closed straight away), because installed apps often don't show the prompt for speech recognition. If the microphone is allowed and speech is still refused (iPhone home-screen apps), the app says so and suggests Safari/Chrome or the keyboard's dictation key.
 - Background noise lowers accuracy. **Every entry is shown for review**, and nothing is guessed: unsaid payment modes, unclear amounts and unknown categories must be filled in by hand.
 
 ## How this was tested

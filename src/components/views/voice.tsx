@@ -61,10 +61,11 @@ import type { VoiceReview, VoiceSetup } from "@/server/data/voice";
 import { cn } from "@/lib/utils";
 
 type Phase = "idle" | "listening" | "reading" | "review" | "saved";
-type VoiceError = "no-speech" | "blocked" | "network" | "no-mic" | "language";
+type VoiceError = "no-speech" | "blocked" | "network" | "no-mic" | "language" | "app";
 type Support = "unknown" | "supported" | "unsupported" | "insecure";
 
 // Minimal typing for the browser Speech API (not in lib.dom for all targets).
+type SpeechResults = ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
 type Recognition = {
   lang: string;
   interimResults: boolean;
@@ -72,15 +73,48 @@ type Recognition = {
   start: () => void;
   stop: () => void;
   abort: () => void;
-  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onresult: ((e: { resultIndex: number; results: SpeechResults }) => void) | null;
   onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
 };
+type RecognitionCtor = new () => Recognition;
 
-function recognitionCtor(): (new () => Recognition) | null {
+function recognitionCtor(): RecognitionCtor | null {
   if (typeof window === "undefined") return null;
-  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
+  const w = window as unknown as { SpeechRecognition?: RecognitionCtor; webkitSpeechRecognition?: RecognitionCtor };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+/**
+ * Phones handle `continuous` recognition badly (Chrome on Android repeats earlier words in later
+ * results, Safari stops anyway), so there we listen phrase by phrase and restart after each pause.
+ */
+function isMobile() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+}
+
+/** Opened from the home screen (installed app) rather than a browser tab. */
+function isStandalone() {
+  return window.matchMedia?.("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+}
+
+const joinText = (a: string, b: string) => [a, b].filter(Boolean).join(" ");
+
+/**
+ * The whole text of one recognition session, final and interim. Rebuilt from every result each
+ * time instead of appended from `resultIndex`, because Chrome on Android resends earlier results
+ * ("20 bags", then "20 bags cement"): a result that repeats or extends the previous one replaces it.
+ */
+function resultsText(results: SpeechResults) {
+  const parts: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const text = results[i][0]?.transcript.trim();
+    if (!text) continue;
+    const last = parts[parts.length - 1];
+    if (last && text.startsWith(last)) parts[parts.length - 1] = text;
+    else parts.push(text);
+  }
+  return parts.join(" ");
 }
 
 const noop = () => () => {};
@@ -93,7 +127,11 @@ const ERROR_COPY: Record<VoiceError, { title: string; body: string }> = {
   "no-speech": { title: "Didn't catch that", body: "No speech was heard. Hold the phone closer, away from mixer noise, and try again." },
   blocked: {
     title: "Microphone permission was denied",
-    body: "Allow the microphone for this site in your browser's site settings, then try again. Or type the entry instead.",
+    body: "Allow the microphone for this site in your browser's site settings, then try again. On iPhone, Dictation must also be on (Settings → General → Keyboard). Or type the entry instead.",
+  },
+  app: {
+    title: "Voice isn't available in the installed app on this phone",
+    body: "Open Arcadia in Chrome or Safari to use the mic. Or tap Type it and use the microphone key on your keyboard: it types what you say.",
   },
   "no-mic": { title: "No microphone found", body: "Connect a microphone or use your phone. You can type the entry instead." },
   network: {
@@ -192,7 +230,13 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
   const [consenting, startConsent] = useTransition();
 
   const recRef = useRef<Recognition | null>(null);
-  const finalRef = useRef("");
+  /** Everything heard in this recording so far, across phrases (phones restart recognition after each pause). */
+  const heardRef = useRef("");
+  /** The user tapped stop: don't restart after the current phrase. */
+  const stoppedRef = useRef(false);
+  /** The microphone was granted through getUserMedia on this page. */
+  const primedRef = useRef(false);
+  const hasEntriesRef = useRef(false);
 
   useEffect(() => {
     if (phase !== "listening") return;
@@ -200,6 +244,9 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
     return () => clearInterval(t);
   }, [phase]);
   useEffect(() => () => recRef.current?.abort(), []);
+  useEffect(() => {
+    hasEntriesRef.current = entries.length > 0;
+  });
 
   const ctx = useMemo(() => ({ today, siteIds: sites.map((s) => s.id), workers, suppliers }), [today, sites, workers, suppliers]);
   const issues = useMemo(() => draftsIssues(entries, ctx), [entries, ctx]);
@@ -254,6 +301,23 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
       setConsentOpen(true);
       return;
     }
+    void startMic();
+  }
+
+  async function startMic() {
+    // Installed apps (and browsers that refused before) often never show the microphone prompt for
+    // speech recognition, so ask for the microphone directly first. The stream is closed at once.
+    if (!primedRef.current && (isStandalone() || error === "blocked") && navigator.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        primedRef.current = true;
+      } catch (err) {
+        const name = (err as DOMException).name;
+        if (name === "NotAllowedError" || name === "SecurityError") return setError("blocked");
+        if (name === "NotFoundError") return setError("no-mic");
+      }
+    }
     listen();
   }
 
@@ -264,7 +328,7 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
         if (!res.ok) return void toast.error(res.error);
         setConsentedAt(res.data.consentedAt);
         setConsentOpen(false);
-        listen();
+        void startMic();
       } catch {
         toast.error("Can't reach the server to record your choice. Type the entry for now.");
       }
@@ -284,65 +348,86 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
     });
   }
 
+  const speechError = (code: string): VoiceError =>
+    code === "not-allowed" || code === "service-not-allowed"
+      ? // The microphone itself was granted, so it's the speech service refusing (iPhone home-screen apps).
+        isStandalone() && primedRef.current
+        ? "app"
+        : "blocked"
+      : code === "network"
+        ? "network"
+        : code === "audio-capture"
+          ? "no-mic"
+          : code === "language-not-supported"
+            ? "language"
+            : "no-speech";
+
   function listen() {
     const Ctor = recognitionCtor();
     if (!Ctor) return;
-    const rec = new Ctor();
-    finalRef.current = "";
+    heardRef.current = "";
+    stoppedRef.current = false;
     setInterim("");
-    rec.lang = SPEECH_LANG[language];
-    rec.interimResults = true;
-    rec.continuous = true;
-    rec.onresult = (e) => {
-      let live = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) finalRef.current += `${r[0].transcript} `;
-        else live += r[0].transcript;
-      }
-      setInterim(`${finalRef.current}${live}`);
-    };
-    rec.onerror = (e) => {
-      if (e.error === "aborted") return;
-      recRef.current = null;
-      setError(
-        e.error === "not-allowed" || e.error === "service-not-allowed"
-          ? "blocked"
-          : e.error === "network"
-            ? "network"
-            : e.error === "audio-capture"
-              ? "no-mic"
-              : e.error === "language-not-supported"
-                ? "language"
-                : "no-speech",
-      );
-      setPhase(entries.length ? "review" : "idle");
-    };
-    rec.onend = () => {
-      if (recRef.current !== rec) return;
-      recRef.current = null;
-      const heard = finalRef.current.trim();
-      if (!heard) {
-        setError("no-speech");
-        setPhase(entries.length ? "review" : "idle");
-        return;
-      }
-      setInterim("");
-      read(heard, true);
-    };
-    recRef.current = rec;
     setSeconds(0);
     setPhase("listening");
+    listenPhrase(Ctor);
+  }
+
+  /** Ends the recording and reads what was heard; `failure` is shown only when nothing was. */
+  function finish(failure: VoiceError | null) {
+    recRef.current = null;
+    const heard = heardRef.current.trim();
+    setInterim("");
+    if (heard) return read(heard, true);
+    setError(failure ?? "no-speech");
+    setPhase(hasEntriesRef.current ? "review" : "idle");
+  }
+
+  function listenPhrase(Ctor: RecognitionCtor) {
+    const rec = new Ctor();
+    const before = heardRef.current;
+    let phrase = "";
+    let failure: string | null = null;
+    rec.lang = SPEECH_LANG[language];
+    rec.interimResults = true;
+    rec.continuous = !isMobile();
+    rec.onresult = (e) => {
+      if (recRef.current !== rec) return;
+      phrase = resultsText(e.results);
+      // Interim words count too: Chrome on Android often ends without marking the last words final.
+      heardRef.current = joinText(before, phrase);
+      setInterim(heardRef.current);
+    };
+    rec.onerror = (e) => {
+      failure = e.error;
+    };
+    rec.onend = () => {
+      if (recRef.current !== rec || failure === "aborted") return;
+      const fatal = failure && failure !== "no-speech" ? speechError(failure) : null;
+      // Keep listening across pauses until the user taps stop; a phrase with nothing in it ends the recording.
+      if (!stoppedRef.current && !fatal && phrase) return listenPhrase(Ctor);
+      finish(fatal);
+    };
+    recRef.current = rec;
     try {
       rec.start();
     } catch {
-      recRef.current = null;
-      setError("blocked");
-      setPhase("idle");
+      finish("blocked");
     }
   }
 
-  const stop = () => recRef.current?.stop();
+  function stop() {
+    const rec = recRef.current;
+    if (!rec) return;
+    stoppedRef.current = true;
+    rec.stop();
+    // Some phones never fire `end` after stop; don't leave the screen listening.
+    setTimeout(() => {
+      if (recRef.current !== rec) return;
+      rec.abort();
+      finish(null);
+    }, 2000);
+  }
 
   function typeInstead() {
     recRef.current?.abort();
@@ -866,13 +951,19 @@ function VoiceBody({ setup }: { setup: VoiceSetup }) {
 
       {listening && (
         // On phones the mic scrolls away under the transcript: keep a large Stop within thumb reach.
-        <div className="no-print fixed inset-x-3 bottom-[calc(max(0.75rem,env(safe-area-inset-bottom))+5.5rem)] z-40 flex items-center justify-between gap-3 rounded-2xl surface-raised p-3 lg:hidden">
-          <span className="num text-sm font-medium" aria-hidden>
-            Listening {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-          </span>
-          <Button className="h-14 min-w-36 rounded-xl text-base" onClick={stop}>
-            <Square className="size-5 fill-current" aria-hidden /> Stop
-          </Button>
+        // It also shows the words as they're heard, since the transcript card is below the fold.
+        <div className="no-print fixed inset-x-3 bottom-[calc(max(0.75rem,env(safe-area-inset-bottom))+5.5rem)] z-40 grid gap-2 rounded-2xl surface-raised p-3 lg:hidden">
+          <p className="max-h-20 overflow-hidden text-base leading-snug">
+            {interim ? (interim.length > 160 ? `…${interim.slice(-160)}` : interim) : <span className="text-muted-foreground">Speak now…</span>}
+          </p>
+          <div className="flex items-center justify-between gap-3">
+            <span className="num text-sm font-medium" aria-hidden>
+              Listening {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
+            </span>
+            <Button className="h-14 min-w-36 rounded-xl text-base" onClick={stop}>
+              <Square className="size-5 fill-current" aria-hidden /> Stop
+            </Button>
+          </div>
         </div>
       )}
       <ConsentDialog open={consentOpen} onOpenChange={setConsentOpen} ai={setup.aiAvailable} busy={consenting} agreed={!!consentedAt} onAgree={agree} />
