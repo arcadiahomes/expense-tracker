@@ -42,7 +42,7 @@ Turn on **object versioning** (S3) or keep a scheduled copy (R2, see the backup 
 ## 3. Vercel (app)
 
 1. Import the repository in Vercel (Add New → Project). The framework is detected as Next.js; `vercel.json`
-   sets `npm ci`, `npm run build` and the function region `sin1` (Singapore, next to the Neon region above).
+   sets `npm ci`, `npm run build` and the function region `iad1` (Washington, D.C., next to the Neon `us-east-2` database).
    If you chose another Neon region, change `regions` to the matching Vercel region.
 2. Settings → Environment Variables. Mark every value **Sensitive**. Set **Production** and **Preview** separately:
 
