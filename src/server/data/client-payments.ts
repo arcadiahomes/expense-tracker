@@ -6,7 +6,7 @@ import { formatINRExact as formatINR } from "@/lib/format";
 import type { ClientInvoice, ClientPaymentKind, ClientReceipt, Page, PaymentMode, ProjectCollection, ReceiptStage } from "@/lib/types";
 import { can, requireSitePermission, scopeSiteIds, siteRoleFor, type Actor } from "../authz";
 import { NotFoundError, ValidationError } from "../errors";
-import { clientPaymentInput, clientRefundInput, invoicePaidInput, receiptFilters, uuid } from "../validation";
+import { clientPaymentInput, clientRefundInput, invoicePaidInput, receiptFilters, standaloneReceiptInput, uuid } from "../validation";
 import { audit } from "./audit";
 import { financialYear, getClientInvoice, invoicePaidSql, invoicesQuery, invoiceTotalSql, lockInvoice } from "./invoices";
 import { organizationProfile } from "./organizations";
@@ -21,6 +21,9 @@ import { decodeCursor, encodeCursor, num, today, type Conn } from "./shared";
  * - paid = payments − refunds − reversals; balance = invoice total − paid.
  * - A receipt shows the invoice as it stood when that entry was recorded (by `seq`), so
  *   downloading it again later always gives the same document.
+ * - A standalone receipt is money received without an invoice (invoice_id null, the payer
+ *   in received_from). It has no invoice balance; its figures are the receipt and any
+ *   refunds of it. Project collections count invoice receipts only.
  * Income only: none of this creates expenses or touches spend and budgets.
  */
 
@@ -37,15 +40,16 @@ type LedgerRow = {
   notes: string | null;
   related_id: string | null;
   related_number: string | null;
-  invoice_id: string;
-  invoice_number: string;
-  invoice_total: string;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  invoice_total: string | null;
+  group_id: string;
   site_id: string;
   site_name: string;
   client_name: string;
   paid_before: string;
   paid_to_date: string;
-  balance_after: string;
+  balance_after: string | null;
   refunded: string;
   reversed: boolean;
   created_by: string;
@@ -54,12 +58,16 @@ type LedgerRow = {
 /**
  * Every ledger entry on the given sites with its running figures. The window sums run over
  * the whole invoice before any outer filter, so a filtered list still shows true balances.
+ * `group_id` is what an entry's figures run over: its invoice, or for a standalone receipt
+ * the receipt itself (refunds of one point at it through related_id).
  */
 function ledgerQuery(siteIds: string[]) {
   return sql`
-    select l.*, (l.invoice_total::numeric - l.paid_to_date::numeric)::numeric(14, 2)::text as balance_after,
+    select l.*,
+           case when l.invoice_id is not null then (l.invoice_total::numeric - l.paid_to_date::numeric)::numeric(14, 2)::text end as balance_after,
            case
              when l.kind <> 'payment' then l.kind::text
+             when l.invoice_id is null then 'general'
              when l.invoice_total::numeric - l.paid_to_date::numeric <= 0 then 'final'
              when l.paid_before::numeric <= 0 then 'advance'
              else 'part'
@@ -67,17 +75,18 @@ function ledgerQuery(siteIds: string[]) {
     from (
       select p.id, p.seq::text as seq, p.kind, p.receipt_number, p.amount::text as amount, p.paid_on::text as paid_on,
              p.method, p.reference, p.notes, p.related_id, r.receipt_number as related_number,
-             p.invoice_id, i.invoice_number, ${invoiceTotalSql}::text as invoice_total,
-             p.site_id, cs.name as site_name, i.client_name,
+             p.invoice_id, i.invoice_number, case when i.id is not null then ${invoiceTotalSql}::text end as invoice_total,
+             coalesce(p.invoice_id, p.related_id, p.id) as group_id,
+             p.site_id, cs.name as site_name, coalesce(i.client_name, p.received_from) as client_name,
              coalesce(sum(case p.kind when 'payment' then p.amount else -p.amount end)
-               over (partition by p.invoice_id order by p.seq rows between unbounded preceding and 1 preceding), 0)::numeric(14, 2)::text as paid_before,
+               over (partition by coalesce(p.invoice_id, p.related_id, p.id) order by p.seq rows between unbounded preceding and 1 preceding), 0)::numeric(14, 2)::text as paid_before,
              sum(case p.kind when 'payment' then p.amount else -p.amount end)
-               over (partition by p.invoice_id order by p.seq rows between unbounded preceding and current row)::numeric(14, 2)::text as paid_to_date,
+               over (partition by coalesce(p.invoice_id, p.related_id, p.id) order by p.seq rows between unbounded preceding and current row)::numeric(14, 2)::text as paid_to_date,
              coalesce((select sum(x.amount) from client_payments x where x.related_id = p.id), 0)::numeric(14, 2)::text as refunded,
              exists (select 1 from client_payments x where x.related_id = p.id and x.kind = 'reversal') as reversed,
              u.name as created_by
       from client_payments p
-      join client_invoices i on i.id = p.invoice_id
+      left join client_invoices i on i.id = p.invoice_id
       join construction_sites cs on cs.id = p.site_id
       join users u on u.id = p.created_by
       left join client_payments r on r.id = p.related_id
@@ -99,13 +108,13 @@ function toDto(r: LedgerRow): ClientReceipt {
     amount: num(r.amount),
     invoiceId: r.invoice_id,
     invoiceNo: r.invoice_number,
-    invoiceTotal: num(r.invoice_total),
+    invoiceTotal: r.invoice_total == null ? null : num(r.invoice_total),
     siteId: r.site_id,
     siteName: r.site_name,
     client: r.client_name,
     paidBefore: num(r.paid_before),
     paidToDate: num(r.paid_to_date),
-    balanceAfter: num(r.balance_after),
+    balanceAfter: r.balance_after == null ? null : num(r.balance_after),
     related: r.related_id && r.related_number ? { id: r.related_id, receiptNo: r.related_number } : undefined,
     refunded: num(r.refunded),
     reversed: r.reversed,
@@ -159,9 +168,9 @@ export async function projectCollections(actor: Actor): Promise<{ projects: Proj
              count(i.id) filter (where i.status <> 'cancelled')::int as invoices,
              coalesce(sum(i.total::numeric) filter (where i.status <> 'cancelled'), 0) as value,
              coalesce(sum(greatest(i.balance::numeric, 0)) filter (where i.status <> 'cancelled'), 0) as outstanding,
-             coalesce((select sum(p.amount) from client_payments p where p.site_id = cs.id and p.kind = 'payment'), 0) as collected,
-             coalesce((select sum(p.amount) from client_payments p where p.site_id = cs.id and p.kind <> 'payment'), 0) as refunded,
-             (select count(*) from client_payments p where p.site_id = cs.id and p.kind = 'payment')::int as receipts
+             coalesce((select sum(p.amount) from client_payments p where p.site_id = cs.id and p.invoice_id is not null and p.kind = 'payment'), 0) as collected,
+             coalesce((select sum(p.amount) from client_payments p where p.site_id = cs.id and p.invoice_id is not null and p.kind <> 'payment'), 0) as refunded,
+             (select count(*) from client_payments p where p.site_id = cs.id and p.invoice_id is not null and p.kind = 'payment')::int as receipts
       from i join construction_sites cs on cs.id = i.site_id
       group by cs.id, cs.name, cs.client_name
     )
@@ -211,10 +220,10 @@ export async function payableInvoices(actor: Actor) {
   }));
 }
 
-/** Every ledger entry against one invoice, oldest first. The caller has checked access. */
-async function entriesFor(siteId: string, invoiceId: string, conn: Conn = db) {
+/** Every ledger entry in one group (an invoice, or a standalone receipt and its refunds), oldest first. The caller has checked access. */
+async function entriesFor(siteId: string, groupId: string, conn: Conn = db) {
   const rows = (await conn.execute(sql`
-    with l as (${ledgerQuery([siteId])}) select * from l where l.invoice_id = ${invoiceId} order by l.seq::bigint
+    with l as (${ledgerQuery([siteId])}) select * from l where l.group_id = ${groupId} order by l.seq::bigint
   `)) as unknown as LedgerRow[];
   return rows.map(toDto);
 }
@@ -226,20 +235,21 @@ export async function invoicePayments(actor: Actor, invoiceId: string): Promise<
 }
 
 /**
- * One receipt with what its document needs: the invoice, the ledger up to and including
- * this entry, and the company's details. NotFound unless the actor manages finance on its site.
+ * One receipt with what its document needs: the invoice (null for a standalone receipt),
+ * the ledger up to and including this entry, and the company's details. NotFound unless
+ * the actor manages finance on its site.
  */
 export async function getReceipt(actor: Actor, id: string, conn: Conn = db) {
   if (!uuid.safeParse(id).success) throw new NotFoundError("Receipt");
   const [meta] = await conn
-    .select({ siteId: clientPayments.siteId, invoiceId: clientPayments.invoiceId })
+    .select({ siteId: clientPayments.siteId, invoiceId: clientPayments.invoiceId, relatedId: clientPayments.relatedId })
     .from(clientPayments)
     .where(and(eq(clientPayments.id, id), eq(clientPayments.organizationId, actor.orgId)))
     .limit(1);
   if (!meta || !can(await siteRoleFor(actor, meta.siteId, conn), "finance:manage")) throw new NotFoundError("Receipt");
-  const entries = await entriesFor(meta.siteId, meta.invoiceId, conn);
+  const entries = await entriesFor(meta.siteId, meta.invoiceId ?? meta.relatedId ?? id, conn);
   const index = entries.findIndex((e) => e.id === id);
-  const [invoice, organization] = await Promise.all([getClientInvoice(actor, meta.invoiceId, conn), organizationProfile(actor, conn)]);
+  const [invoice, organization] = await Promise.all([meta.invoiceId ? getClientInvoice(actor, meta.invoiceId, conn) : null, organizationProfile(actor, conn)]);
   return { receipt: entries[index], history: entries.slice(0, index + 1), invoice, organization };
 }
 
@@ -265,21 +275,21 @@ const lockReceiptSeries = (conn: Conn, orgId: string) => conn.execute(sql`select
 
 /**
  * The entry already saved under this form submission (a retry or a double tap), as columns
- * to select alongside other figures in one round trip: existing_id, existing_site, existing_invoice.
+ * to select alongside other figures in one round trip: existing_id, existing_site, existing_group.
  */
 function byClientKey(actor: Actor, clientKey: string | undefined) {
   return sql`
     left join lateral (
-      select e.id as existing_id, e.site_id as existing_site, e.invoice_id as existing_invoice from client_payments e
+      select e.id as existing_id, e.site_id as existing_site, coalesce(e.invoice_id, e.related_id, e.id) as existing_group from client_payments e
       where e.organization_id = ${actor.orgId} and e.client_key = ${clientKey ?? null}::uuid
     ) e on true
   `;
 }
 
-type Existing = { existing_id: string | null; existing_site: string | null; existing_invoice: string | null };
-const existingOf = (r: Existing): Saved | null => (r.existing_id ? { id: r.existing_id, siteId: r.existing_site!, invoiceId: r.existing_invoice! } : null);
+type Existing = { existing_id: string | null; existing_site: string | null; existing_group: string | null };
+const existingOf = (r: Existing): Saved | null => (r.existing_id ? { id: r.existing_id, siteId: r.existing_site!, groupId: r.existing_group! } : null);
 
-const LABEL: Record<ReceiptStage, string> = { advance: "Advance payment", part: "Part payment", final: "Final payment", refund: "Refund", reversal: "Reversal" };
+const LABEL: Record<ReceiptStage, string> = { advance: "Advance payment", part: "Part payment", final: "Final payment", general: "General receipt", refund: "Refund", reversal: "Reversal" };
 
 type PaymentFields = { amount: string | "balance"; paidOn: string; method: PaymentMode; reference?: string; notes?: string; clientKey?: string };
 
@@ -289,11 +299,11 @@ type PaymentFields = { amount: string | "balance"; paidOn: string; method: Payme
  * receipt lock (so numbers are unique). "balance" takes whatever is left to receive.
  * A submission whose clientKey was already saved returns that receipt instead.
  */
-type Saved = { id: string; siteId: string; invoiceId: string };
+type Saved = { id: string; siteId: string; groupId: string };
 
 /** The receipt just written, with its running figures. Access was checked by the write. */
-async function saved({ id, siteId, invoiceId }: Saved) {
-  return (await entriesFor(siteId, invoiceId)).find((e) => e.id === id)!;
+async function saved({ id, siteId, groupId }: Saved) {
+  return (await entriesFor(siteId, groupId)).find((e) => e.id === id)!;
 }
 
 async function receive(actor: Actor, invoiceId: string, input: PaymentFields): Promise<Saved> {
@@ -349,7 +359,7 @@ async function receive(actor: Actor, invoiceId: string, input: PaymentFields): P
       summary: `Receipt ${receiptNumber}: ${formatINR(num(amount))} from ${inv.clientName} against invoice ${inv.invoiceNumber} (${LABEL[stage].toLowerCase()}, ${formatINR(num(after))} left)`,
       data: { invoiceId: inv.id, receiptNumber, amount, paidOn: input.paidOn, method: input.method, reference: input.reference, balanceBefore: balance, balanceAfter: after },
     });
-    return { id, siteId: inv.siteId, invoiceId: inv.id };
+    return { id, siteId: inv.siteId, groupId: inv.id };
   });
 }
 
@@ -367,6 +377,52 @@ export async function markInvoicePaid(actor: Actor, raw: unknown): Promise<Clien
 }
 
 /**
+ * Money received without an invoice (a token advance, a deposit, a one-off job): a
+ * receipt numbered in the same RCT series, on one site, naming whoever paid. A submission
+ * whose clientKey was already saved returns that receipt instead. Returns the receipt.
+ */
+export async function recordStandaloneReceipt(actor: Actor, raw: unknown) {
+  const input = standaloneReceiptInput.parse(raw);
+  if (input.paidOn > today()) throw new ValidationError("The payment date can't be in the future.", { paidOn: "Pick today or earlier." });
+  const result = await db.transaction(async (tx): Promise<Saved> => {
+    await requireSitePermission(actor, input.siteId, "finance:manage", tx);
+    const [state] = (await tx.execute(sql`select e.* from (select 1) one ${byClientKey(actor, input.clientKey)}`)) as unknown as Existing[];
+    const existing = existingOf(state);
+    if (existing) return existing;
+
+    await lockReceiptSeries(tx, actor.orgId);
+    const [{ id, receiptNumber }] = await tx
+      .insert(clientPayments)
+      .values({
+        organizationId: actor.orgId,
+        siteId: input.siteId,
+        invoiceId: null,
+        receivedFrom: input.receivedFrom,
+        kind: "payment",
+        receiptNumber: nextReceiptNumber(actor.orgId, "RCT", input.paidOn),
+        amount: input.amount,
+        paidOn: input.paidOn,
+        method: input.method,
+        reference: input.reference,
+        notes: input.notes,
+        clientKey: input.clientKey,
+        createdBy: actor.userId,
+      })
+      .returning({ id: clientPayments.id, receiptNumber: clientPayments.receiptNumber });
+    await audit(tx, actor, {
+      siteId: input.siteId,
+      action: "payment.receive",
+      entityType: "client_payment",
+      entityId: id,
+      summary: `Receipt ${receiptNumber}: ${formatINR(num(input.amount))} from ${input.receivedFrom} (general receipt, no invoice)`,
+      data: { receiptNumber, receivedFrom: input.receivedFrom, amount: input.amount, paidOn: input.paidOn, method: input.method, reference: input.reference, notes: input.notes },
+    });
+    return { id, siteId: input.siteId, groupId: id };
+  });
+  return saved(result);
+}
+
+/**
  * Gives money back against one payment, as a new linked record; the payment's receipt
  * stays as it was. A refund is any part of what's left of the payment; a reversal undoes
  * all of it (a bounced cheque, a payment entered twice) and only if nothing was refunded
@@ -376,15 +432,19 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
   const input = clientRefundInput.parse(raw);
   if (input.paidOn > today()) throw new ValidationError("The date can't be in the future.", { paidOn: "Pick today or earlier." });
   const [target] = await db
-    .select({ invoiceId: clientPayments.invoiceId })
+    .select({ invoiceId: clientPayments.invoiceId, siteId: clientPayments.siteId, receivedFrom: clientPayments.receivedFrom })
     .from(clientPayments)
     .where(and(eq(clientPayments.id, input.paymentId), eq(clientPayments.organizationId, actor.orgId)))
     .limit(1);
   if (!target) throw new NotFoundError("Receipt");
 
-  const result = await db.transaction(async (tx) => {
-    const inv = await lockInvoice(actor, target.invoiceId, tx);
-    await requireSitePermission(actor, inv.siteId, "payment:refund", tx);
+  const result = await db.transaction(async (tx): Promise<Saved> => {
+    // Lock what the money hangs on: the invoice, or a standalone receipt's own row
+    // (a lock, not an update, so the append-only trigger doesn't fire).
+    const inv = target.invoiceId ? await lockInvoice(actor, target.invoiceId, tx) : null;
+    if (!inv) await tx.select({ id: clientPayments.id }).from(clientPayments).where(eq(clientPayments.id, input.paymentId)).for("update");
+    const siteId = inv?.siteId ?? target.siteId;
+    await requireSitePermission(actor, siteId, "payment:refund", tx);
     // In one round trip: a submission already saved under this key, and what's left of the payment.
     const [pay] = (await tx.execute(sql`
       select e.*, p.kind, p.receipt_number, p.amount::text as amount, p.paid_on::text as paid_on,
@@ -417,8 +477,9 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
       .insert(clientPayments)
       .values({
         organizationId: actor.orgId,
-        siteId: inv.siteId,
-        invoiceId: inv.id,
+        siteId,
+        invoiceId: inv?.id ?? null,
+        receivedFrom: inv ? null : target.receivedFrom,
         kind: input.kind,
         receiptNumber: nextReceiptNumber(actor.orgId, "RFD", input.paidOn),
         amount,
@@ -432,14 +493,14 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
       })
       .returning({ id: clientPayments.id, receiptNumber: clientPayments.receiptNumber });
     await audit(tx, actor, {
-      siteId: inv.siteId,
+      siteId,
       action: input.kind === "reversal" ? "payment.reverse" : "payment.refund",
       entityType: "client_payment",
       entityId: id,
-      summary: `${input.kind === "reversal" ? "Reversed" : "Refunded"} ${formatINR(num(amount))} of receipt ${pay.receipt_number} (${receiptNumber}), invoice ${inv.invoiceNumber}: ${input.reason}`,
-      data: { invoiceId: inv.id, paymentId: input.paymentId, receiptNumber, amount, paidOn: input.paidOn, method: input.method, reference: input.reference, reason: input.reason },
+      summary: `${input.kind === "reversal" ? "Reversed" : "Refunded"} ${formatINR(num(amount))} of receipt ${pay.receipt_number} (${receiptNumber}), ${inv ? `invoice ${inv.invoiceNumber}` : "general receipt"}: ${input.reason}`,
+      data: { invoiceId: inv?.id ?? null, paymentId: input.paymentId, receiptNumber, amount, paidOn: input.paidOn, method: input.method, reference: input.reference, reason: input.reason },
     });
-    return { id, siteId: inv.siteId, invoiceId: inv.id };
+    return { id, siteId, groupId: inv?.id ?? input.paymentId };
   });
   return saved(result);
 }

@@ -170,8 +170,9 @@ export type ClientPaymentKind = "payment" | "refund" | "reversal";
 /**
  * What a receipt is, from the invoice's balance around it: the first payment that leaves a
  * balance is an advance, later ones are part payments, the one that clears it is final.
+ * A payment received without an invoice (a standalone receipt) is general.
  */
-export type ReceiptStage = "advance" | "part" | "final" | "refund" | "reversal";
+export type ReceiptStage = "advance" | "part" | "final" | "general" | "refund" | "reversal";
 
 /** One entry in the client payments ledger. Every figure is summed in SQL as of this entry. */
 export type ClientReceipt = {
@@ -184,16 +185,19 @@ export type ClientReceipt = {
   reference: string;
   notes: string;
   amount: number;
-  invoiceId: string;
-  invoiceNo: string;
-  invoiceTotal: number;
+  /** Null for a standalone receipt (and refunds of one): money received without an invoice. */
+  invoiceId: string | null;
+  invoiceNo: string | null;
+  invoiceTotal: number | null;
   siteId: string;
   siteName: string;
+  /** The invoice's client, or who paid a standalone receipt. */
   client: string;
-  /** Net paid on the invoice before this entry, and including it. */
+  /** Net paid on the invoice (on a standalone receipt: on that receipt) before this entry, and including it. */
   paidBefore: number;
   paidToDate: number;
-  balanceAfter: number;
+  /** What's left to receive on the invoice; null without one. */
+  balanceAfter: number | null;
   /** For a refund or reversal: the payment it gives back. */
   related?: { id: string; receiptNo: string };
   /** For a payment: refunded or reversed against it since, and whether it was reversed. */

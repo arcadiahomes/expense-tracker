@@ -368,6 +368,18 @@ export const clientPaymentInput = z.object({
   clientKey: uuid,
 });
 
+/** Money received without an invoice: a standalone receipt on one site, from whoever paid. */
+export const standaloneReceiptInput = z.object({
+  siteId: uuid,
+  receivedFrom: trimmed(200, "Received from"),
+  amount: positiveMoney,
+  paidOn: isoDate,
+  method: receivedBy,
+  reference: optionalText(120),
+  notes: optionalText(500),
+  clientKey: uuid,
+});
+
 /** Money given back against one payment (refund, any part of it), or the whole payment undone (reversal). */
 export const clientRefundInput = z
   .object({
@@ -382,7 +394,7 @@ export const clientRefundInput = z
   })
   .refine((r) => r.kind === "reversal" || r.amount, { message: "Enter the amount refunded.", path: ["amount"] });
 
-export const RECEIPT_STAGES = ["all", "advance", "part", "final", "refund", "reversal"] as const;
+export const RECEIPT_STAGES = ["all", "advance", "part", "final", "general", "refund", "reversal"] as const;
 
 export const receiptFilters = pageInput
   .extend({

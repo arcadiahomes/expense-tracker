@@ -120,6 +120,13 @@
       "when": 1792753156136,
       "tag": "0016_client_payments_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1792922028674,
+      "tag": "0017_standalone_receipts",
+      "breakpoints": true
     }
   ]
 }
