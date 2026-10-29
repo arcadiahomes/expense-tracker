@@ -38,6 +38,10 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
   const payable = workers.filter((w) => w.active);
   // Sorted by total, so the first worker sets the scale of the bars.
   const top = Number(totals.workers[0]?.total ?? 0);
+  const totalOf = new Map(totals.workers.map((t) => [t.workerId, t]));
+  // Inactive workers with no payments here aren't in the totals; their statement is empty.
+  const totalFor = (w: Worker): WorkerTotal =>
+    totalOf.get(w.id) ?? { workerId: w.id, name: w.name, trade: w.trade, active: w.active, payments: 0, total: "0", thisMonth: "0", lastPaid: null };
 
   return (
     <>
@@ -78,7 +82,7 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
             <ul className="surface divide-y rounded-xl">
               {totals.workers.map((w) => (
                 <li key={w.workerId} className="grid gap-2 px-4 py-3 sm:grid-cols-[1fr_auto] sm:items-center sm:gap-4">
-                  <div className="min-w-0">
+                  <button type="button" className="min-w-0 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none" aria-label={`${w.name}: ${fmt.money(Number(w.total))} paid. Show payments`} onClick={() => setStatement(w)}>
                     <div className="flex items-baseline justify-between gap-3">
                       <p className="truncate font-semibold">{w.name}</p>
                       <p className="num font-display text-lg font-bold">{fmt.money(Number(w.total))}</p>
@@ -96,14 +100,14 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
                         .filter(Boolean)
                         .join(" · ")}
                     </p>
-                  </div>
+                  </button>
                   <div className="flex gap-2">
                     {canWrite && w.active && (
                       <Button size="sm" className="h-10" onClick={() => setPaying({ workerId: w.workerId })}>
                         <HandCoins aria-hidden /> Pay
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" className="h-10" disabled={!w.payments} onClick={() => setStatement(w)}>
+                    <Button size="sm" variant="ghost" className="h-10" onClick={() => setStatement(w)}>
                       <NotebookText aria-hidden /> Payments
                     </Button>
                   </div>
@@ -120,10 +124,13 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
             <ul className="surface divide-y rounded-xl">
               {workers.map((w) => (
                 <li key={w.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className={cn("font-medium", !w.active && "text-muted-foreground")}>{w.name}{!w.active && " (inactive)"}</p>
-                    <p className="text-xs text-muted-foreground">{[w.trade, w.phone].filter(Boolean).join(" · ") || "No details"}</p>
-                  </div>
+                  <button type="button" className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none" onClick={() => setStatement(totalFor(w))}>
+                    <div className="min-w-0">
+                      <p className={cn("font-medium", !w.active && "text-muted-foreground")}>{w.name}{!w.active && " (inactive)"}</p>
+                      <p className="text-xs text-muted-foreground">{[w.trade, w.phone].filter(Boolean).join(" · ") || "No details"}</p>
+                    </div>
+                    <p className="num shrink-0 font-semibold">{fmt.money(Number(totalFor(w).total))}</p>
+                  </button>
                   {canWrite && (
                     <Button variant="ghost" size="icon" className="size-10" aria-label={`Edit ${w.name}`} onClick={() => setEditing(w)}>
                       <Pencil aria-hidden />
@@ -267,6 +274,9 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
   const sorted = (ls: WorkerPayment[]) => [...ls].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   const paid = lines ? lines.reduce((t, l) => t + Number(l.amount), 0) : Number(worker.total);
   const count = lines ? lines.length : worker.payments;
+  const { today } = useSession();
+  const month = today.slice(0, 7);
+  const thisMonth = lines ? lines.filter((l) => l.date.startsWith(month)).reduce((t, l) => t + Number(l.amount), 0) : Number(worker.thisMonth);
 
   async function remove(line: WorkerPayment) {
     setBusy(line.id);
@@ -311,6 +321,10 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
         </SheetDescription>
       </SheetHeader>
       <div className="px-4 pb-6">
+        <div className="mb-4 grid grid-cols-2 gap-3">
+          <Stat label="Total paid" value={fmt.money(paid)} />
+          <Stat label="This month" value={fmt.money(thisMonth)} />
+        </div>
         {failed ? (
           <p className="text-sm text-muted-foreground">Couldn&apos;t load the payments. Check your connection and reopen this.</p>
         ) : !lines ? (
