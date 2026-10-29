@@ -179,6 +179,19 @@ describe("worker totals", () => {
     await expect(workerPayments(w.a.eng2, s, anu)).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("count labour expenses with no worker in the site total, apart from the workers", async () => {
+    const s = (await createSite(w.a.owner, { name: "Unnamed Labour Site", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    await recordLabourPayment(w.a.owner, { siteId: s, kind: "wage", method: "cash", workerId: anu, amount: "500", paidOn: "2026-10-05" });
+    await createExpense(w.a.owner, expense(s, { categoryCode: "labour", description: "Gang wages", expenseDate: "2026-10-07", items: [{ description: "Gang", unitPrice: "1200" }] }));
+    await createExpense(w.a.owner, expense(s, { categoryCode: "labour", description: "Helpers", expenseDate: "2026-09-30", items: [{ description: "Helpers", unitPrice: "300" }] }));
+    await createExpense(w.a.owner, expense(s, { expenseDate: "2026-10-07" }));
+
+    const t = await labourTotals(w.a.owner, s);
+    expect(t.totals).toEqual({ total: "2000.00", thisMonth: "1700.00", workers: 1 });
+    expect(t.unassigned).toEqual({ payments: 2, total: "1500.00", thisMonth: "1200.00" });
+    expect(t.workers.filter((x) => x.payments > 0).map((x) => [x.name, x.total])).toEqual([["Anu", "500.00"]]);
+  });
+
   it("add up one worker's payments on every readable site", async () => {
     const s1 = (await createSite(w.a.owner, { name: "Spread One", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
     const s2 = (await createSite(w.a.owner, { name: "Spread Two", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;

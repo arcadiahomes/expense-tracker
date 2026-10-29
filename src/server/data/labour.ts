@@ -327,16 +327,21 @@ export type WorkerTotal = {
   lastPaid: string | null;
 };
 
-/** One site's approved labour expenses that name a worker. */
-const paidLabour = (siteId: string) => sql`
+/** One site's approved labour expenses, with or without a worker named. */
+const labourSpend = (siteId: string) => sql`
   select e.id, e.labour_worker_id as worker_id, e.expense_date, e.total_amount, e.labour_kind, e.payment_method, e.notes
   from expenses e join expense_categories c on c.id = e.category_id
-  where e.site_id = ${siteId} and e.deleted_at is null and e.status = 'approved' and e.labour_worker_id is not null and c.code = 'labour'
+  where e.site_id = ${siteId} and e.deleted_at is null and e.status = 'approved' and c.code = 'labour'
 `;
+
+/** One site's approved labour expenses that name a worker. */
+const paidLabour = (siteId: string) => sql`select * from (${labourSpend(siteId)}) l where l.worker_id is not null`;
 
 /**
  * What each worker has been paid on one site, all time and this month, summed in SQL.
  * Labour is tracked by payments only: every payment is a labour expense naming the worker.
+ * The site totals count every labour expense (as the dashboard's Labour category does);
+ * `unassigned` is the part entered without a worker.
  */
 export async function labourTotals(actor: Actor, siteId: string) {
   await requireSitePermission(actor, siteId, "site:read");
@@ -355,15 +360,19 @@ export async function labourTotals(actor: Actor, siteId: string) {
     order by coalesce(sum(p.total_amount), 0) desc, w.name
   `)) as unknown as { id: string; name: string; trade: string | null; active: boolean; payments: number; total: string; this_month: string; last_paid: string | null }[];
   const [totals] = (await db.execute(sql`
-    with p as (${paidLabour(siteId)})
+    with p as (${labourSpend(siteId)})
     select coalesce(sum(total_amount), 0)::numeric(14, 2)::text as total,
            coalesce(sum(total_amount) filter (where expense_date >= ${month}::date), 0)::numeric(14, 2)::text as this_month,
-           count(distinct worker_id)::int as workers
+           count(distinct worker_id)::int as workers,
+           count(*) filter (where worker_id is null)::int as unassigned_count,
+           coalesce(sum(total_amount) filter (where worker_id is null), 0)::numeric(14, 2)::text as unassigned,
+           coalesce(sum(total_amount) filter (where worker_id is null and expense_date >= ${month}::date), 0)::numeric(14, 2)::text as unassigned_this_month
     from p
-  `)) as unknown as { total: string; this_month: string; workers: number }[];
+  `)) as unknown as { total: string; this_month: string; workers: number; unassigned_count: number; unassigned: string; unassigned_this_month: string }[];
   return {
     workers: rows.map((r): WorkerTotal => ({ workerId: r.id, name: r.name, trade: r.trade, active: r.active, payments: r.payments, total: r.total, thisMonth: r.this_month, lastPaid: r.last_paid })),
     totals: { total: totals.total, thisMonth: totals.this_month, workers: totals.workers },
+    unassigned: { payments: totals.unassigned_count, total: totals.unassigned, thisMonth: totals.unassigned_this_month },
   };
 }
 
