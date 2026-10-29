@@ -7,6 +7,7 @@ import {
   createWorker,
   labourBalances,
   labourTotals,
+  mergeWorkers,
   recordAttendance,
   recordAttendanceBatch,
   recordLabourPayment,
@@ -154,6 +155,45 @@ describe("workers", () => {
     expect(audit).toHaveLength(1);
     await expect(updateWorker(w.a.viewer, { id: anu, name: "Anu" })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(updateWorker(w.b.owner, { id: anu, name: "Anu" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("merging workers", () => {
+  it("moves payments and attendance on every site to the kept worker and removes the duplicate", async () => {
+    const s1 = (await createSite(w.a.owner, { name: "Merge One", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const s2 = (await createSite(w.a.owner, { name: "Merge Two", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const keep = (await createWorker(w.a.owner, { name: "Rajan" })).id;
+    // A duplicate as created before names were matched ignoring case.
+    const dup = (await createWorker(w.a.owner, { name: "rajan", trade: "Helper", phone: "98470 00000" })).id;
+    const pay = { kind: "wage", method: "cash" };
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s1, workerId: keep, amount: "1000", paidOn: "2026-10-05" });
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s1, workerId: dup, amount: "600", paidOn: "2026-10-06" });
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s2, workerId: dup, amount: "400", paidOn: "2026-10-07" });
+    await recordAttendance(w.a.owner, { siteId: s2, workerId: dup, workDate: "2026-10-07", status: "present", dayRate: "800" });
+
+    await expect(mergeWorkers(w.a.siteOwner, { fromId: dup, intoId: keep })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(mergeWorkers(w.b.owner, { fromId: dup, intoId: keep })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(mergeWorkers(w.a.owner, { fromId: keep, intoId: keep })).rejects.toThrow();
+
+    const res = await mergeWorkers(w.a.owner, { fromId: dup, intoId: keep });
+    expect([res.expenses, res.attendance]).toEqual([2, 1]);
+    expect([res.worker.trade, res.worker.phone]).toEqual(["Helper", "98470 00000"]);
+    const one = (await labourTotals(w.a.owner, s1)).workers.filter((x) => x.payments > 0).map((x) => [x.name, x.payments, x.total]);
+    expect(one).toEqual([["Rajan", 2, "1600.00"]]);
+    expect((await workerSiteTotals(w.a.owner, keep)).map((x) => x.total).sort()).toEqual(["1600.00", "400.00"]);
+    const days = await db.select().from(labourAttendance).where(eq(labourAttendance.workerId, keep));
+    expect(days).toHaveLength(1);
+    await expect(mergeWorkers(w.a.owner, { fromId: dup, intoId: keep })).rejects.toBeInstanceOf(NotFoundError);
+    const log = await db.select().from(auditLog).where(and(eq(auditLog.entityId, keep), eq(auditLog.action, "worker.merge")));
+    expect(log).toHaveLength(1);
+  });
+
+  it("refuses when both have attendance on the same site and day", async () => {
+    const s = (await createSite(w.a.owner, { name: "Merge Clash", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const keep = (await createWorker(w.a.owner, { name: "Biju" })).id;
+    const dup = (await createWorker(w.a.owner, { name: "biju" })).id;
+    for (const workerId of [keep, dup]) await recordAttendance(w.a.owner, { siteId: s, workerId, workDate: "2026-10-08", status: "present", dayRate: "800" });
+    await expect(mergeWorkers(w.a.owner, { fromId: dup, intoId: keep })).rejects.toBeInstanceOf(ValidationError);
   });
 });
 

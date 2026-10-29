@@ -1,6 +1,6 @@
 "use server";
 
-import { createWorker, recordLabourPayment, updateWorker, workerPayments, workerSiteTotals } from "../data/labour";
+import { createWorker, mergeWorkers, recordLabourPayment, updateWorker, workerPayments, workerSiteTotals } from "../data/labour";
 import { run } from "./run";
 
 export async function createWorkerAction(input: unknown) {
@@ -9,6 +9,10 @@ export async function createWorkerAction(input: unknown) {
 
 export async function updateWorkerAction(input: unknown) {
   return run((actor) => updateWorker(actor, input));
+}
+
+export async function mergeWorkersAction(input: unknown) {
+  return run((actor) => mergeWorkers(actor, input));
 }
 
 export async function recordLabourPaymentAction(input: unknown) {

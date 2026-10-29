@@ -464,6 +464,11 @@ export const workerInput = z.object({
 
 export const workerUpdateInput = workerInput.extend({ id: uuid, active: z.boolean().optional() });
 
+/** Two records of the same person: `fromId` is folded into `intoId` and removed. */
+export const workerMergeInput = z
+  .object({ fromId: uuid, intoId: uuid })
+  .refine((m) => m.fromId !== m.intoId, { message: "Choose a different worker to merge into.", path: ["intoId"] });
+
 // ---- Materials ----------------------------------------------------------------
 
 export const materialInput = z.object({
