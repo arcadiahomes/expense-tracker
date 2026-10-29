@@ -4,9 +4,9 @@ import { db } from "@/db";
 import { constructionSites, expenseCategories, expenseItems, expenses, labourAttendance, labourWorkers } from "@/db/schema";
 import { formatINR } from "@/lib/format";
 import { toPaise } from "@/lib/voice";
-import { accessibleSites, can, isOrgAdmin, requireOrgReader, requireSitePermission, scopeSiteIds, type Actor } from "../authz";
+import { accessibleSites, can, isOrgAdmin, requireOrgAdmin, requireOrgReader, requireSitePermission, scopeSiteIds, type Actor } from "../authz";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors";
-import { attendanceBatchInput, attendanceInput, isoDate, labourPaymentInput, uuid, workerInput, workerUpdateInput } from "../validation";
+import { attendanceBatchInput, attendanceInput, isoDate, labourPaymentInput, uuid, workerInput, workerMergeInput, workerUpdateInput } from "../validation";
 import { audit } from "./audit";
 import { categoryId, enteredApproved, num, requireOpenSite, rethrowUnique, today, type Conn } from "./shared";
 
@@ -82,6 +82,57 @@ export async function updateWorker(actor: Actor, raw: unknown) {
       return row;
     })
     .catch((err) => rethrowUnique(err, "name", "A worker with this name already exists."));
+}
+
+/**
+ * Folds a duplicate worker into another: its labour expenses and attendance on every
+ * site move to the kept worker, blank details are filled from it, and it is removed.
+ * Org owners/admins only, since it rewrites records on sites others may not see.
+ */
+export async function mergeWorkers(actor: Actor, raw: unknown) {
+  requireOrgAdmin(actor);
+  const { fromId, intoId } = workerMergeInput.parse(raw);
+  return db.transaction(async (tx) => {
+    const both = await tx
+      .select()
+      .from(labourWorkers)
+      .where(and(inArray(labourWorkers.id, [fromId, intoId]), eq(labourWorkers.organizationId, actor.orgId)))
+      .orderBy(asc(labourWorkers.id))
+      .for("update");
+    const from = both.find((w) => w.id === fromId);
+    const into = both.find((w) => w.id === intoId);
+    if (!from || !into) throw new NotFoundError("Worker");
+    // Attendance is one row per worker, site and day; two rows for the same day can't be combined.
+    const [clash] = (await tx.execute(sql`
+      select count(*)::int as days from labour_attendance a join labour_attendance b
+        on b.site_id = a.site_id and b.work_date = a.work_date
+      where a.worker_id = ${fromId} and b.worker_id = ${intoId}
+    `)) as unknown as { days: number }[];
+    if (clash.days > 0) {
+      throw new ValidationError(`${from.name} and ${into.name} both have attendance on ${clash.days} of the same ${clash.days === 1 ? "day" : "days"}. Remove one of them first.`);
+    }
+    const moved = await tx.update(expenses).set({ labourWorkerId: intoId }).where(eq(expenses.labourWorkerId, fromId)).returning({ id: expenses.id });
+    const days = await tx.update(labourAttendance).set({ workerId: intoId }).where(eq(labourAttendance.workerId, fromId)).returning({ id: labourAttendance.id });
+    const [row] = await tx
+      .update(labourWorkers)
+      .set({
+        trade: into.trade ?? from.trade,
+        phone: into.phone ?? from.phone,
+        dailyWage: into.dailyWage ?? from.dailyWage,
+        active: into.active || from.active,
+      })
+      .where(eq(labourWorkers.id, intoId))
+      .returning();
+    await tx.delete(labourWorkers).where(eq(labourWorkers.id, fromId));
+    await audit(tx, actor, {
+      action: "worker.merge",
+      entityType: "worker",
+      entityId: intoId,
+      summary: `Merged worker ${from.name} into ${into.name}`,
+      data: { from: { id: from.id, name: from.name, trade: from.trade, phone: from.phone, dailyWage: from.dailyWage }, expenses: moved.length, attendance: days.length },
+    });
+    return { worker: row, expenses: moved.length, attendance: days.length };
+  });
 }
 
 export async function setWorkerActive(actor: Actor, workerId: string, active: boolean) {

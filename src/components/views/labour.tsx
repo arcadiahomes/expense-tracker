@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition, type FormEvent } from "react";
-import { HardHat, NotebookText, Pencil, Plus, Trash2, UserPlus } from "lucide-react";
+import { Combine, HardHat, NotebookText, Pencil, Plus, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -12,16 +12,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, Stat, useSubmit } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
+import { SelectField } from "@/components/select-field";
 import { SitePicker } from "@/components/site-picker";
 import { EmptyState } from "@/components/states";
 import { can } from "@/lib/permissions";
-import { useFormat, useSession } from "@/lib/session";
+import { useCanManageOrg, useFormat, useSession } from "@/lib/session";
 import { deleteExpenseAction, restoreExpenseAction } from "@/server/actions/expenses";
-import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, updateWorkerAction } from "@/server/actions/labour";
+import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, mergeWorkersAction, updateWorkerAction } from "@/server/actions/labour";
 import type { WorkerPayment, WorkerSiteTotal, WorkerTotal } from "@/server/data/labour";
 import { cn } from "@/lib/utils";
 
 type Worker = { id: string; name: string; trade: string | null; phone: string | null; dailyWage: string | null; active: boolean };
+/** Names that differ only in case or spacing are probably the same person (as the server matches them). */
+const nameKey = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ");
+
 type Totals = {
   workers: WorkerTotal[];
   totals: { total: string; thisMonth: string; workers: number };
@@ -33,6 +37,12 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
   const fmt = useFormat();
   const site = sites.find((s) => s.id === siteId);
   const canWrite = site?.status !== "completed" && can(site?.role, "expense:create");
+  // Merging rewrites records on every site, so it's for org owners/admins.
+  const canMerge = useCanManageOrg();
+  const canEdit = canWrite || canMerge;
+  const sameName = new Map<string, number>();
+  for (const w of workers) sameName.set(nameKey(w.name), (sameName.get(nameKey(w.name)) ?? 0) + 1);
+  const isDuplicate = (w: Worker) => (sameName.get(nameKey(w.name)) ?? 0) > 1;
   const [statement, setStatement] = useState<WorkerTotal | null>(null);
   const [editing, setEditing] = useState<Worker | "new" | null>(null);
   // Sorted by total, so the first worker sets the scale of the bars.
@@ -133,10 +143,11 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
                     <div className="min-w-0">
                       <p className={cn("font-medium", !w.active && "text-muted-foreground")}>{w.name}{!w.active && " (inactive)"}</p>
                       <p className="text-xs text-muted-foreground">{[w.trade, w.phone].filter(Boolean).join(" · ") || "No details"}</p>
+                      {isDuplicate(w) && <p className="text-xs font-medium text-over">Possible duplicate{canMerge ? ": edit to merge" : ""}</p>}
                     </div>
                     <p className="num shrink-0 font-semibold">{fmt.money(Number(totalFor(w).total))}</p>
                   </button>
-                  {canWrite && (
+                  {canEdit && (
                     <Button variant="ghost" size="icon" className="size-10" aria-label={`Edit ${w.name}`} onClick={() => setEditing(w)}>
                       <Pencil aria-hidden />
                     </Button>
@@ -149,7 +160,7 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
       </Tabs>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
-        <DialogContent className="sm:max-w-md">{editing && <WorkerForm worker={editing === "new" ? null : editing} onDone={() => setEditing(null)} />}</DialogContent>
+        <DialogContent className="sm:max-w-md">{editing && <WorkerForm worker={editing === "new" ? null : editing} others={canMerge ? workers : []} onDone={() => setEditing(null)} />}</DialogContent>
       </Dialog>
       <Sheet open={!!statement} onOpenChange={(o) => !o && setStatement(null)}>
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">{statement && <Payments siteId={siteId} worker={statement} canWrite={canWrite} />}</SheetContent>
@@ -158,7 +169,7 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
   );
 }
 
-function WorkerForm({ worker, onDone }: { worker: Worker | null; onDone: () => void }) {
+function WorkerForm({ worker, others, onDone }: { worker: Worker | null; others: Worker[]; onDone: () => void }) {
   const submit = useSubmit();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -204,7 +215,58 @@ function WorkerForm({ worker, onDone }: { worker: Worker | null; onDone: () => v
       <DialogFooter>
         <Button type="submit" className="h-11 px-5" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
       </DialogFooter>
+      {worker && <MergeWorker worker={worker} others={others} onDone={onDone} />}
     </form>
+  );
+}
+
+/** Folds this worker into another record of the same person (org owners/admins; `others` is empty otherwise). */
+function MergeWorker({ worker, others, onDone }: { worker: Worker; others: Worker[]; onDone: () => void }) {
+  const submit = useSubmit();
+  const [pending, start] = useTransition();
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [confirming, setConfirming] = useState(false);
+  // Likely duplicates first, then everyone else by name.
+  const targets = others
+    .filter((w) => w.id !== worker.id)
+    .sort((a, b) => Number(nameKey(b.name) === nameKey(worker.name)) - Number(nameKey(a.name) === nameKey(worker.name)) || a.name.localeCompare(b.name));
+  const [intoId, setIntoId] = useState<string | null>(targets.find((w) => nameKey(w.name) === nameKey(worker.name))?.id ?? null);
+  const into = targets.find((w) => w.id === intoId);
+  if (!targets.length) return null;
+
+  function merge() {
+    if (!intoId) return;
+    start(async () => {
+      const res = await submit(() => mergeWorkersAction({ fromId: worker.id, intoId }), setErrors);
+      if (res) {
+        const moved = [`${res.expenses} ${res.expenses === 1 ? "payment" : "payments"}`, res.attendance > 0 && `${res.attendance} attendance ${res.attendance === 1 ? "day" : "days"}`].filter(Boolean).join(" and ");
+        toast.success(`${worker.name} merged into ${into?.name ?? "the worker"}`, { description: `${moved} moved.` });
+        onDone();
+      }
+    });
+  }
+
+  return (
+    <div className="grid gap-3 border-t pt-4">
+      <div>
+        <p className="text-sm font-semibold">Same person as another worker?</p>
+        <p className="text-xs text-muted-foreground">Their payments and attendance on every site move to the worker you choose, and {worker.name} is removed.</p>
+      </div>
+      <Field id="w-merge" label="Merge into" error={errors.intoId}>
+        <SelectField id="w-merge" value={intoId} onChange={setIntoId} placeholder="Choose a worker" options={targets.map((w) => ({ value: w.id, label: w.trade ? `${w.name} (${w.trade})` : w.name }))} />
+      </Field>
+      <Button type="button" variant="outline" className="h-11" disabled={pending || !intoId} onClick={() => setConfirming(true)}>
+        <Combine aria-hidden /> {pending ? "Merging…" : `Merge into ${into?.name ?? "…"}`}
+      </Button>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={`Merge ${worker.name} into ${into?.name ?? "this worker"}?`}
+        description={`Every payment and attendance day of ${worker.name}, on every site, will belong to ${into?.name}. ${worker.name} is then removed. This can't be undone.`}
+        confirmLabel="Merge workers"
+        onConfirm={merge}
+      />
+    </div>
   );
 }
 
