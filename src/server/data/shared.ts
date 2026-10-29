@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, sql, type SQLWrapper } from "drizzle-orm";
 import { db, type Db, type Tx } from "@/db";
 import { constructionSites, expenseCategories, labourWorkers, suppliers } from "@/db/schema";
 import { todayInIndia } from "@/lib/dates";
@@ -49,8 +49,19 @@ export async function supplierIdByName(actor: Actor, name: string | undefined, c
   return row.id;
 }
 
+/** Same person despite case and spacing ("anu " is Anu), as voice entry already treats it. */
+const workerKey = (name: SQLWrapper | string) => sql`lower(regexp_replace(btrim(${name}), '[[:space:]]+', ' ', 'g'))`;
+
 export async function workerIdByName(actor: Actor, name: string | undefined, conn: Conn = db) {
   if (!name) return null;
+  // An exact match first, then the oldest worker whose name differs only in case or spaces.
+  const [existing] = await conn
+    .select({ id: labourWorkers.id })
+    .from(labourWorkers)
+    .where(and(eq(labourWorkers.organizationId, actor.orgId), sql`${workerKey(labourWorkers.name)} = ${workerKey(name)}`))
+    .orderBy(sql`${labourWorkers.name} = ${name} desc`, asc(labourWorkers.createdAt))
+    .limit(1);
+  if (existing) return existing.id;
   const [row] = await conn
     .insert(labourWorkers)
     .values({ organizationId: actor.orgId, name })
