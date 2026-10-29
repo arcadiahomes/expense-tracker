@@ -20,8 +20,8 @@ import { can } from "@/lib/permissions";
 import { useFormat, useSession } from "@/lib/session";
 import type { PaymentMode } from "@/lib/types";
 import { deleteExpenseAction, restoreExpenseAction } from "@/server/actions/expenses";
-import { createWorkerAction, loadWorkerPaymentsAction, recordLabourPaymentAction, updateWorkerAction } from "@/server/actions/labour";
-import type { WorkerPayment, WorkerTotal } from "@/server/data/labour";
+import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, recordLabourPaymentAction, updateWorkerAction } from "@/server/actions/labour";
+import type { WorkerPayment, WorkerSiteTotal, WorkerTotal } from "@/server/data/labour";
 import { cn } from "@/lib/utils";
 
 type Worker = { id: string; name: string; trade: string | null; phone: string | null; dailyWage: string | null; active: boolean };
@@ -277,6 +277,8 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
   const { today } = useSession();
   const month = today.slice(0, 7);
   const thisMonth = lines ? lines.filter((l) => l.date.startsWith(month)).reduce((t, l) => t + Number(l.amount), 0) : Number(worker.thisMonth);
+  const [bySite, setBySite] = useState<WorkerSiteTotal[] | null>(null);
+  const allSites = bySite?.reduce((t, s) => t + Number(s.total), 0) ?? null;
 
   async function remove(line: WorkerPayment) {
     setBusy(line.id);
@@ -287,6 +289,7 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
       return;
     }
     setLines((ls) => ls && ls.filter((l) => l.id !== line.id));
+    setSitesVersion((v) => v + 1);
     toast("Payment deleted", {
       description: `${worker.name}, ${fmt.money(Number(line.amount))} on ${fmt.date(line.date)}`,
       action: {
@@ -294,11 +297,25 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
         onClick: async () => {
           const undo = await restoreExpenseAction(line.id).catch(() => null);
           if (!undo?.ok) toast.error(undo ? undo.error : "Couldn't restore the payment. Check your connection.");
-          else setLines((ls) => ls && sorted([...ls, line]));
+          else {
+            setLines((ls) => ls && sorted([...ls, line]));
+            setSitesVersion((v) => v + 1);
+          }
         },
       },
     });
   }
+  // Reloaded after a delete or undo here so the all-sites figures follow.
+  const [sitesVersion, setSitesVersion] = useState(0);
+  useEffect(() => {
+    let live = true;
+    loadWorkerSiteTotalsAction(worker.workerId)
+      .then((res) => live && res.ok && setBySite(res.data))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [worker.workerId, sitesVersion]);
   useEffect(() => {
     let live = true;
     loadWorkerPaymentsAction(siteId, worker.workerId)
@@ -322,9 +339,32 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
       </SheetHeader>
       <div className="px-4 pb-6">
         <div className="mb-4 grid grid-cols-2 gap-3">
-          <Stat label="Total paid" value={fmt.money(paid)} />
+          <Stat label="Paid on this site" value={fmt.money(paid)} />
           <Stat label="This month" value={fmt.money(thisMonth)} />
+          <div className="col-span-2">
+            <Stat label="Paid on all sites" value={allSites == null ? "…" : fmt.money(allSites)} />
+          </div>
         </div>
+        {bySite && bySite.length > 0 && (
+          <div className="mb-5">
+            <h3 className="mb-2 text-sm font-semibold">By site</h3>
+            <ul className="divide-y rounded-lg border text-sm">
+              {bySite.map((s) => (
+                <li key={s.siteId} className={cn("flex items-center justify-between gap-3 px-3 py-2", s.siteId === siteId && "bg-secondary/60")}>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{s.siteName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {s.payments} {s.payments === 1 ? "payment" : "payments"}
+                      {s.lastPaid && ` · last paid ${fmt.date(s.lastPaid)}`}
+                    </p>
+                  </div>
+                  <p className="num shrink-0 font-semibold">{fmt.money(Number(s.total))}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <h3 className="mb-2 text-sm font-semibold">Payments on this site</h3>
         {failed ? (
           <p className="text-sm text-muted-foreground">Couldn&apos;t load the payments. Check your connection and reopen this.</p>
         ) : !lines ? (

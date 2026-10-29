@@ -13,6 +13,7 @@ import {
   updateWorker,
   workerLedger,
   workerPayments,
+  workerSiteTotals,
 } from "@/server/data/labour";
 import { createSite } from "@/server/data/sites";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
@@ -176,5 +177,21 @@ describe("worker totals", () => {
     expect((await workerPayments(w.a.owner, s, akhil)).map((p) => [p.date, p.amount, p.note])).toEqual([["2026-10-06", "400.00", "Shuttering"]]);
     await expect(labourTotals(w.a.eng2, s)).rejects.toBeInstanceOf(NotFoundError);
     await expect(workerPayments(w.a.eng2, s, anu)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("add up one worker's payments on every readable site", async () => {
+    const s1 = (await createSite(w.a.owner, { name: "Spread One", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const s2 = (await createSite(w.a.owner, { name: "Spread Two", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const pay = { kind: "wage", method: "cash", workerId: akhil };
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s1, amount: "300", paidOn: "2026-10-01" });
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s2, amount: "800", paidOn: "2026-10-02" });
+    await recordLabourPayment(w.a.owner, { ...pay, siteId: s2, amount: "200", paidOn: "2026-10-03" });
+
+    const bySite = (await workerSiteTotals(w.a.owner, akhil)).filter((r) => r.siteId === s1 || r.siteId === s2);
+    expect(bySite.map((r) => [r.siteName, r.payments, r.total, r.lastPaid])).toEqual([
+      ["Spread Two", 2, "1000.00", "2026-10-03"],
+      ["Spread One", 1, "300.00", "2026-10-01"],
+    ]);
+    expect(await workerSiteTotals(w.b.owner, akhil)).toEqual([]);
   });
 });

@@ -1,10 +1,10 @@
 import "server-only";
-import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { expenseItems, expenses, labourAttendance, labourWorkers } from "@/db/schema";
+import { constructionSites, expenseCategories, expenseItems, expenses, labourAttendance, labourWorkers } from "@/db/schema";
 import { formatINR } from "@/lib/format";
 import { toPaise } from "@/lib/voice";
-import { accessibleSites, can, isOrgAdmin, requireOrgReader, requireSitePermission, type Actor } from "../authz";
+import { accessibleSites, can, isOrgAdmin, requireOrgReader, requireSitePermission, scopeSiteIds, type Actor } from "../authz";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors";
 import { attendanceBatchInput, attendanceInput, isoDate, labourPaymentInput, uuid, workerInput, workerUpdateInput } from "../validation";
 import { audit } from "./audit";
@@ -381,6 +381,42 @@ export async function workerPayments(actor: Actor, siteId: string, workerId: str
     order by p.expense_date desc, p.id desc
   `)) as unknown as WorkerPayment[];
   return rows;
+}
+
+export type WorkerSiteTotal = { siteId: string; siteName: string; payments: number; total: string; lastPaid: string | null };
+
+/** What one worker has been paid on each site the actor can read, largest first. Same definition as `paidLabour`. */
+export async function workerSiteTotals(actor: Actor, workerId: string) {
+  await requireOrgReader(actor);
+  if (!uuid.safeParse(workerId).success) throw new NotFoundError("Worker");
+  const siteIds = await scopeSiteIds(actor);
+  if (siteIds.length === 0) return [];
+  const total = sql<string>`sum(${expenses.totalAmount})::numeric(14, 2)::text`;
+  const rows = await db
+    .select({
+      siteId: constructionSites.id,
+      siteName: constructionSites.name,
+      payments: sql<number>`count(*)::int`,
+      total,
+      lastPaid: sql<string | null>`max(${expenses.expenseDate})::text`,
+    })
+    .from(expenses)
+    .innerJoin(expenseCategories, eq(expenseCategories.id, expenses.categoryId))
+    .innerJoin(constructionSites, eq(constructionSites.id, expenses.siteId))
+    .innerJoin(labourWorkers, eq(labourWorkers.id, expenses.labourWorkerId))
+    .where(
+      and(
+        inArray(expenses.siteId, siteIds),
+        isNull(expenses.deletedAt),
+        eq(expenses.status, "approved"),
+        eq(expenses.labourWorkerId, workerId),
+        eq(labourWorkers.organizationId, actor.orgId),
+        eq(expenseCategories.code, "labour"),
+      ),
+    )
+    .groupBy(constructionSites.id)
+    .orderBy(desc(sql`sum(${expenses.totalAmount})`), asc(constructionSites.name));
+  return rows satisfies WorkerSiteTotal[];
 }
 
 export type LedgerLine = {
