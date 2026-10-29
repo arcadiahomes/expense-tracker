@@ -192,6 +192,16 @@ describe("worker totals", () => {
     expect(t.workers.filter((x) => x.payments > 0).map((x) => [x.name, x.total])).toEqual([["Anu", "500.00"]]);
   });
 
+  it("count an expense naming a worker in other case or spacing toward that worker", async () => {
+    const s = (await createSite(w.a.owner, { name: "Name Match Site", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    await recordLabourPayment(w.a.owner, { siteId: s, kind: "wage", method: "cash", workerId: anu, amount: "500", paidOn: "2026-10-05" });
+    await createExpense(w.a.owner, expense(s, { categoryCode: "labour", description: "Wages", workerName: "  anu", items: [{ description: "Wages", unitPrice: "800" }] }));
+
+    const t = await labourTotals(w.a.owner, s);
+    expect(t.workers.filter((x) => x.payments > 0).map((x) => [x.name, x.payments, x.total])).toEqual([["Anu", 2, "1300.00"]]);
+    expect(t.unassigned.payments).toBe(0);
+  });
+
   it("add up one worker's payments on every readable site", async () => {
     const s1 = (await createSite(w.a.owner, { name: "Spread One", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
     const s2 = (await createSite(w.a.owner, { name: "Spread Two", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
