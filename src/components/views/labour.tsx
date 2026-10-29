@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition, type FormEvent } from "react";
-import { HandCoins, HardHat, NotebookText, Pencil, Plus, Trash2, UserPlus } from "lucide-react";
+import { HardHat, NotebookText, Pencil, Plus, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,32 +10,31 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { PAYMENT_OPTIONS } from "@/components/expense-form-dialog";
 import { Field, Stat, useSubmit } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
-import { SelectField } from "@/components/select-field";
 import { SitePicker } from "@/components/site-picker";
 import { EmptyState } from "@/components/states";
 import { can } from "@/lib/permissions";
 import { useFormat, useSession } from "@/lib/session";
-import type { PaymentMode } from "@/lib/types";
 import { deleteExpenseAction, restoreExpenseAction } from "@/server/actions/expenses";
-import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, recordLabourPaymentAction, updateWorkerAction } from "@/server/actions/labour";
+import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, updateWorkerAction } from "@/server/actions/labour";
 import type { WorkerPayment, WorkerSiteTotal, WorkerTotal } from "@/server/data/labour";
 import { cn } from "@/lib/utils";
 
 type Worker = { id: string; name: string; trade: string | null; phone: string | null; dailyWage: string | null; active: boolean };
-type Totals = { workers: WorkerTotal[]; totals: { total: string; thisMonth: string; workers: number } };
+type Totals = {
+  workers: WorkerTotal[];
+  totals: { total: string; thisMonth: string; workers: number };
+  unassigned: { payments: number; total: string; thisMonth: string };
+};
 
 export function LabourView({ siteId, totals, workers }: { siteId: string; totals: Totals; workers: Worker[] }) {
   const { sites } = useSession();
   const fmt = useFormat();
   const site = sites.find((s) => s.id === siteId);
   const canWrite = site?.status !== "completed" && can(site?.role, "expense:create");
-  const [paying, setPaying] = useState<{ workerId: string | null } | null>(null);
   const [statement, setStatement] = useState<WorkerTotal | null>(null);
   const [editing, setEditing] = useState<Worker | "new" | null>(null);
-  const payable = workers.filter((w) => w.active);
   // Sorted by total, so the first worker sets the scale of the bars.
   const top = Number(totals.workers[0]?.total ?? 0);
   const totalOf = new Map(totals.workers.map((t) => [t.workerId, t]));
@@ -47,24 +46,19 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
     <>
       <PageHeader
         title="Labour"
-        description="Record what you pay each worker. Every payment is saved as a labour expense, and each worker's total adds up here."
+        description="What each worker has been paid on this site. Payments are labour expenses: add them on the Expenses page and name the worker."
         actions={
           canWrite && (
-            <>
-              <Button variant="outline" className="h-11" onClick={() => setEditing("new")}>
-                <UserPlus aria-hidden /> Add worker
-              </Button>
-              <Button className="h-11" disabled={!payable.length} onClick={() => setPaying({ workerId: null })}>
-                <HandCoins aria-hidden /> Add payment
-              </Button>
-            </>
+            <Button variant="outline" className="h-11" onClick={() => setEditing("new")}>
+              <UserPlus aria-hidden /> Add worker
+            </Button>
           )
         }
       />
       <SitePicker siteId={siteId} className="mb-5" />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-3">
-        <Stat label="Total paid to labour" value={fmt.money(Number(totals.totals.total))} hint="Labour expenses naming a worker" />
+        <Stat label="Total paid to labour" value={fmt.money(Number(totals.totals.total))} hint="Every approved labour expense on this site" />
         <Stat label="This month" value={fmt.money(Number(totals.totals.thisMonth))} />
         <Stat label="Workers paid" value={totals.totals.workers} />
       </div>
@@ -76,8 +70,8 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
         </TabsList>
 
         <TabsContent value="totals" className="mt-3">
-          {totals.workers.length === 0 ? (
-            <EmptyState icon={HardHat} title="No workers yet" description="Add workers, then record what you pay them." />
+          {totals.workers.length === 0 && totals.unassigned.payments === 0 ? (
+            <EmptyState icon={HardHat} title="No workers yet" description="Add workers, then record what you pay them as labour expenses." />
           ) : (
             <ul className="surface divide-y rounded-xl">
               {totals.workers.map((w) => (
@@ -102,17 +96,28 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
                     </p>
                   </button>
                   <div className="flex gap-2">
-                    {canWrite && w.active && (
-                      <Button size="sm" className="h-10" onClick={() => setPaying({ workerId: w.workerId })}>
-                        <HandCoins aria-hidden /> Pay
-                      </Button>
-                    )}
                     <Button size="sm" variant="ghost" className="h-10" onClick={() => setStatement(w)}>
                       <NotebookText aria-hidden /> Payments
                     </Button>
                   </div>
                 </li>
               ))}
+              {totals.unassigned.payments > 0 && (
+                <li className="px-4 py-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="truncate font-semibold text-muted-foreground">No worker named</p>
+                    <p className="num font-display text-lg font-bold">{fmt.money(Number(totals.unassigned.total))}</p>
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {[
+                      `${totals.unassigned.payments} labour ${totals.unassigned.payments === 1 ? "expense" : "expenses"} without a worker`,
+                      Number(totals.unassigned.thisMonth) > 0 && `${fmt.money(Number(totals.unassigned.thisMonth))} this month`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </li>
+              )}
             </ul>
           )}
         </TabsContent>
@@ -143,9 +148,6 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
         </TabsContent>
       </Tabs>
 
-      <Dialog open={!!paying} onOpenChange={(o) => !o && setPaying(null)}>
-        <DialogContent className="sm:max-w-md">{paying && <PayForm siteId={siteId} workers={payable} workerId={paying.workerId} onDone={() => setPaying(null)} />}</DialogContent>
-      </Dialog>
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent className="sm:max-w-md">{editing && <WorkerForm worker={editing === "new" ? null : editing} onDone={() => setEditing(null)} />}</DialogContent>
       </Dialog>
@@ -153,64 +155,6 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">{statement && <Payments siteId={siteId} worker={statement} canWrite={canWrite} />}</SheetContent>
       </Sheet>
     </>
-  );
-}
-
-/** A payment to a worker, saved as a labour expense. Without a preselected worker it asks for one. */
-function PayForm({ siteId, workers, workerId: preselected, onDone }: { siteId: string; workers: Worker[]; workerId: string | null; onDone: () => void }) {
-  const submit = useSubmit();
-  const { today } = useSession();
-  const fmt = useFormat();
-  const [pending, start] = useTransition();
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [workerId, setWorkerId] = useState(preselected);
-  const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<PaymentMode>("cash");
-  const [paidOn, setPaidOn] = useState(today);
-  const [note, setNote] = useState("");
-  const worker = workers.find((w) => w.id === workerId);
-
-  function save(e: FormEvent) {
-    e.preventDefault();
-    if (!workerId) return;
-    start(async () => {
-      const res = await submit(() => recordLabourPaymentAction({ siteId, workerId, kind: "wage", amount, method, paidOn, note: note || undefined }), setErrors);
-      if (res) {
-        toast.success(`${fmt.money(Number(amount))} to ${worker?.name ?? "the worker"} saved`);
-        onDone();
-      }
-    });
-  }
-
-  return (
-    <form onSubmit={save} className="grid gap-4">
-      <DialogHeader>
-        <DialogTitle className="text-lg font-semibold">{preselected && worker ? `Pay ${worker.name}` : "Add labour payment"}</DialogTitle>
-        <DialogDescription>This is saved as a labour expense on this site.</DialogDescription>
-      </DialogHeader>
-      {!preselected && (
-        <Field id="pay-worker" label="Worker" error={errors.workerId}>
-          <SelectField id="pay-worker" value={workerId} onChange={setWorkerId} placeholder="Choose a worker" options={workers.map((w) => ({ value: w.id, label: w.trade ? `${w.name} (${w.trade})` : w.name }))} />
-        </Field>
-      )}
-      <div className="grid grid-cols-2 gap-3">
-        <Field id="pay-amount" label="Amount (₹)" error={errors.amount}>
-          <Input id="pay-amount" inputMode="decimal" className="num h-11 text-base font-semibold" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ""))} />
-        </Field>
-        <Field id="pay-date" label="Date" error={errors.paidOn}>
-          <Input id="pay-date" type="date" className="h-11" max={today} value={paidOn} onChange={(e) => setPaidOn(e.target.value)} />
-        </Field>
-      </div>
-      <Field id="pay-method" label="Paid by" error={errors.method}>
-        <SelectField id="pay-method" value={method} onChange={setMethod} options={PAYMENT_OPTIONS.filter((o) => o.value !== "credit")} />
-      </Field>
-      <Field id="pay-note" label="Note (optional)">
-        <Input id="pay-note" className="h-11" maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} />
-      </Field>
-      <DialogFooter>
-        <Button type="submit" className="h-11 px-5" disabled={pending || !amount || !workerId}>{pending ? "Saving…" : "Save payment"}</Button>
-      </DialogFooter>
-    </form>
   );
 }
 
