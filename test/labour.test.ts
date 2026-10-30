@@ -6,6 +6,7 @@ import { createExpense, deleteExpense } from "@/server/data/expenses";
 import {
   createWorker,
   labourBalances,
+  labourBySite,
   labourTotals,
   mergeWorkers,
   recordAttendance,
@@ -198,6 +199,27 @@ describe("merging workers", () => {
 });
 
 describe("worker totals", () => {
+  it("list each worker's labour paid per readable site, with the cash part and unnamed labour", async () => {
+    const s = (await createSite(w.a.owner, { name: "By Site Labour", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    await recordLabourPayment(w.a.owner, { siteId: s, kind: "wage", method: "cash", workerId: anu, amount: "1000", paidOn: "2026-10-01" });
+    await recordLabourPayment(w.a.owner, { siteId: s, kind: "advance", method: "upi", workerId: anu, amount: "250", paidOn: "2026-10-03" });
+    await recordLabourPayment(w.a.owner, { siteId: s, kind: "wage", method: "cash", workerId: akhil, amount: "600", paidOn: "2026-10-02" });
+    const gone = await recordLabourPayment(w.a.owner, { siteId: s, kind: "wage", method: "cash", workerId: akhil, amount: "999", paidOn: "2026-10-02" });
+    await deleteExpense(w.a.owner, gone.expenseId);
+    await createExpense(w.a.owner, expense(s, { categoryCode: "labour", description: "Gang", items: [{ description: "Gang", unitPrice: "300" }] }));
+    await createExpense(w.a.owner, expense(s, {}));
+
+    const one = (await labourBySite(w.a.owner)).find((x) => x.siteId === s)!;
+    expect([one.siteName, one.total]).toEqual(["By Site Labour", "2150.00"]);
+    expect(one.workers.map((x) => [x.name, x.payments, x.total, x.cash])).toEqual([
+      ["Anu", 2, "1250.00", "1000.00"],
+      ["Akhil", 1, "600.00", "600.00"],
+      [null, 1, "300.00", "300.00"],
+    ]);
+    expect(one.cash).toBe("1900.00");
+    expect((await labourBySite(w.a.eng2)).some((x) => x.siteId === s)).toBe(false);
+  });
+
   it("sum each worker's payments on the site, with no attendance needed", async () => {
     const s = (await createSite(w.a.owner, { name: "Totals Site", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
     const pay = { siteId: s, kind: "wage", method: "cash" };
