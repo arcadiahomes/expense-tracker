@@ -11,7 +11,6 @@ import {
   ClipboardList,
   FileText,
   HandCoins,
-  HardHat,
   History,
   LayoutGrid,
   Menu,
@@ -41,7 +40,7 @@ type NavItem = { href: string; label: string; icon: LucideIcon };
 
 const NAV_GROUPS: { label: string; items: string[] }[] = [
   { label: "Overview", items: ["/", "/my", "/approvals"] },
-  { label: "Operations", items: ["/sites", "/engineers", "/voice", "/materials", "/labour"] },
+  { label: "Operations", items: ["/sites", "/engineers", "/voice", "/materials"] },
   { label: "Finance", items: ["/reports", "/invoices", "/receipts", "/bills", "/suppliers", "/activity"] },
 ];
 
@@ -57,13 +56,12 @@ const NAV: NavItem[] = [
   { href: "/receipts", label: "Receipts", icon: HandCoins },
   { href: "/bills", label: "Bills", icon: ReceiptText },
   { href: "/materials", label: "Materials", icon: Boxes },
-  { href: "/labour", label: "Labour", icon: HardHat },
   { href: "/suppliers", label: "Suppliers", icon: Store },
   { href: "/activity", label: "Activity", icon: History },
 ];
 
 /** The four on the phone's bottom bar; the rest live behind "More". */
-const BOTTOM = ["/", "/sites", "/voice", "/labour"];
+const BOTTOM = ["/", "/sites", "/voice", "/materials"];
 /** An assistant engineer's whole app: their entries and voice entry. */
 const ASSISTANT_NAV = ["/my", "/voice"];
 
