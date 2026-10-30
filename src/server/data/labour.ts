@@ -479,6 +479,49 @@ export async function workerSiteTotals(actor: Actor, workerId: string) {
   return rows satisfies WorkerSiteTotal[];
 }
 
+export type SiteWorkerTotal = { workerId: string | null; name: string | null; trade: string | null; payments: number; total: string; cash: string; lastPaid: string | null };
+export type SiteLabourTotals = { siteId: string; siteName: string; total: string; cash: string; workers: SiteWorkerTotal[] };
+
+/**
+ * What each worker has been paid on every site the actor reads, for the dashboard.
+ * Same definition as `labourTotals`: approved labour expenses; the row with no worker
+ * (`workerId` null) is labour entered without one. `cash` is the part paid in cash.
+ */
+export async function labourBySite(actor: Actor): Promise<SiteLabourTotals[]> {
+  const siteIds = await scopeSiteIds(actor);
+  if (siteIds.length === 0) return [];
+  const rows = (await db.execute(sql`
+    select s.id as site_id, s.name as site_name, w.id as worker_id, w.name, w.trade,
+           count(*)::int as payments,
+           sum(e.total_amount)::numeric(14, 2)::text as total,
+           coalesce(sum(e.total_amount) filter (where e.payment_method = 'cash'), 0)::numeric(14, 2)::text as cash,
+           max(e.expense_date)::text as last_paid
+    from expenses e
+    join expense_categories c on c.id = e.category_id
+    join construction_sites s on s.id = e.site_id
+    left join labour_workers w on w.id = e.labour_worker_id and w.organization_id = ${actor.orgId}
+    where e.site_id in ${siteIds} and e.deleted_at is null and e.status = 'approved' and c.code = 'labour'
+    group by s.id, w.id
+    order by s.name, s.id, (w.id is null), sum(e.total_amount) desc, w.name
+  `)) as unknown as { site_id: string; site_name: string; worker_id: string | null; name: string | null; trade: string | null; payments: number; total: string; cash: string; last_paid: string | null }[];
+  const sites = new Map<string, SiteLabourTotals>();
+  for (const r of rows) {
+    let site = sites.get(r.site_id);
+    if (!site) sites.set(r.site_id, (site = { siteId: r.site_id, siteName: r.site_name, total: "0", cash: "0", workers: [] }));
+    site.workers.push({ workerId: r.worker_id, name: r.name, trade: r.trade, payments: r.payments, total: r.total, cash: r.cash, lastPaid: r.last_paid });
+  }
+  // Site totals summed in SQL too, so they never drift from the rows by rounding.
+  const totals = (await db.execute(sql`
+    select e.site_id, sum(e.total_amount)::numeric(14, 2)::text as total,
+           coalesce(sum(e.total_amount) filter (where e.payment_method = 'cash'), 0)::numeric(14, 2)::text as cash
+    from expenses e join expense_categories c on c.id = e.category_id
+    where e.site_id in ${siteIds} and e.deleted_at is null and e.status = 'approved' and c.code = 'labour'
+    group by e.site_id
+  `)) as unknown as { site_id: string; total: string; cash: string }[];
+  for (const t of totals) Object.assign(sites.get(t.site_id) ?? {}, { total: t.total, cash: t.cash });
+  return [...sites.values()];
+}
+
 export type LedgerLine = {
   date: string;
   kind: "attendance" | "wage" | "advance";

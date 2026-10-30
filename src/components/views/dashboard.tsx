@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Building2, CalendarClock, CalendarDays, CalendarRange, ClipboardCheck, Mic, Plus, TrendingDown, TrendingUp } from "lucide-react";
+import { Building2, CalendarClock, CalendarDays, CalendarRange, ClipboardCheck, HardHat, Mic, Plus, TrendingDown, TrendingUp } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
+import { EmptyState } from "@/components/states";
 import { TapeMeter } from "@/components/tape-meter";
 import { ExpenseFormDialog } from "@/components/expense-form-dialog";
 import { Sparkline, SpendTrendChart } from "@/components/charts";
@@ -15,11 +16,12 @@ import { longDate } from "@/lib/format";
 import { useFormat, useSession, useWritableSites } from "@/lib/session";
 import type { AnalyticsData } from "@/server/data/analytics";
 import type { DashboardData } from "@/server/data/dashboard";
+import type { SiteLabourTotals } from "@/server/data/labour";
 import { AnalyticsFilters, BudgetAlerts, CategoryRanking, MoneyPosition, RecentTransactions, SiteComparison, UnpaidBalances } from "./analytics-panels";
 import { cn } from "@/lib/utils";
 
 
-export function DashboardView({ data, analytics, filterError }: { data: DashboardData; analytics: AnalyticsData; filterError?: string }) {
+export function DashboardView({ data, analytics, labour, filterError }: { data: DashboardData; analytics: AnalyticsData; labour: SiteLabourTotals[]; filterError?: string }) {
   const [adding, setAdding] = useState(false);
   const canWrite = useWritableSites().length > 0;
   return (
@@ -41,7 +43,18 @@ export function DashboardView({ data, analytics, filterError }: { data: Dashboar
         }
       />
       <PendingApprovals />
-      <DashboardBody data={data} analytics={analytics} filterError={filterError} />
+      <Tabs defaultValue="overview">
+        <TabsList className="no-print mb-2 h-11!">
+          <TabsTrigger value="overview" className="px-3">Overview</TabsTrigger>
+          <TabsTrigger value="labour" className="px-3">Labour</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview">
+          <DashboardBody data={data} analytics={analytics} filterError={filterError} />
+        </TabsContent>
+        <TabsContent value="labour">
+          <LabourBySite sites={labour} />
+        </TabsContent>
+      </Tabs>
       <ExpenseFormDialog open={adding} onOpenChange={setAdding} />
     </>
   );
@@ -235,6 +248,62 @@ function DashboardBody({ data, analytics, filterError }: { data: DashboardData; 
       </div>
       <SiteComparison data={analytics} />
       <UnpaidBalances data={analytics} />
+    </div>
+  );
+}
+
+/** What each worker has been paid on each site, all time; every figure was summed by the server. */
+function LabourBySite({ sites }: { sites: SiteLabourTotals[] }) {
+  const fmt = useFormat();
+  if (sites.length === 0) {
+    return <EmptyState icon={HardHat} title="No labour payments yet" description="Payments to workers, recorded as labour expenses, show here per site." />;
+  }
+  return (
+    <div className="grid gap-4 lg:gap-5">
+      {sites.map((site) => (
+        <Panel
+          key={site.siteId}
+          title={site.siteName}
+          description={`${fmt.money(Number(site.total))} paid for labour, ${fmt.money(Number(site.cash))} of it in cash`}
+          action={<Link href={`/labour?site=${site.siteId}`} className="text-sm font-medium underline-offset-4 hover:underline">Details</Link>}
+        >
+          <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <table className="w-full min-w-[520px] text-sm">
+              <caption className="sr-only">Labour paid per worker on {site.siteName}</caption>
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th scope="col" className="py-2 pr-3 font-medium">Worker</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Payments</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Last paid</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">In cash</th>
+                  <th scope="col" className="py-2 text-right font-medium">Total paid</th>
+                </tr>
+              </thead>
+              <tbody>
+                {site.workers.map((w) => (
+                  <tr key={w.workerId ?? "unassigned"} className="border-b last:border-0">
+                    <th scope="row" className="py-2 pr-3 text-left font-medium">
+                      {w.name ?? <span className="text-muted-foreground">No worker named</span>}
+                      {w.trade && <span className="block text-xs font-normal text-muted-foreground">{w.trade}</span>}
+                    </th>
+                    <td className="num py-2 pr-3 text-right">{w.payments}</td>
+                    <td className="num py-2 pr-3 text-right">{w.lastPaid ? fmt.date(w.lastPaid) : "–"}</td>
+                    <td className="num py-2 pr-3 text-right">{fmt.money(Number(w.cash))}</td>
+                    <td className="num py-2 text-right font-semibold">{fmt.money(Number(w.total))}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t text-left">
+                  <th scope="row" colSpan={3} className="py-2 pr-3 font-semibold">Site total</th>
+                  <td className="num py-2 pr-3 text-right font-semibold">{fmt.money(Number(site.cash))}</td>
+                  <td className="num py-2 text-right font-semibold">{fmt.money(Number(site.total))}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </Panel>
+      ))}
     </div>
   );
 }

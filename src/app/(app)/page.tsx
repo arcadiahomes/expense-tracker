@@ -3,6 +3,7 @@ import { PageSkeleton } from "@/components/states";
 import { DashboardView } from "@/components/views/dashboard";
 import { getAnalytics, type AnalyticsData } from "@/server/data/analytics";
 import { getDashboard } from "@/server/data/dashboard";
+import { labourBySite } from "@/server/data/labour";
 import { NotFoundError, ValidationError } from "@/server/errors";
 import { requireRecordsReader } from "@/server/session";
 
@@ -23,7 +24,8 @@ async function Dashboard({ searchParams }: PageProps<"/">) {
     error = err instanceof NotFoundError ? "That site isn't available to you." : err instanceof ValidationError ? err.message : "Those filters aren't valid.";
     analytics = await getAnalytics(actor, {});
   }
-  return <DashboardView data={await getDashboard(actor)} analytics={analytics} filterError={error} />;
+  const [data, labour] = await Promise.all([getDashboard(actor), labourBySite(actor)]);
+  return <DashboardView data={data} analytics={analytics} labour={labour} filterError={error} />;
 }
 
 export default function DashboardPage(props: PageProps<"/">) {
