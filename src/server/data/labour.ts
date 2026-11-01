@@ -522,6 +522,49 @@ export async function labourBySite(actor: Actor): Promise<SiteLabourTotals[]> {
   return [...sites.values()];
 }
 
+export type WorkerAcrossSites = { workerId: string | null; name: string | null; trade: string | null; total: string; bySite: Record<string, string> };
+export type LabourByWorker = { sites: { siteId: string; siteName: string; total: string }[]; workers: WorkerAcrossSites[]; total: string };
+
+/**
+ * Each worker's labour paid on every site the actor reads, for the Labour page: one row per
+ * worker (largest total first, labour without a worker last), one column per site. Same
+ * definition as `labourBySite`. Cells, row, column and grand totals all come from one
+ * grouping-sets query, so they add up exactly.
+ */
+export async function labourByWorker(actor: Actor): Promise<LabourByWorker> {
+  const siteIds = await scopeSiteIds(actor);
+  const result: LabourByWorker = { sites: [], workers: [], total: "0.00" };
+  if (siteIds.length === 0) return result;
+  const rows = (await db.execute(sql`
+    select e.site_id, s.name as site_name, w.id as worker_id, w.name, w.trade,
+           grouping(e.site_id)::int as all_sites, grouping(w.id)::int as all_workers,
+           sum(e.total_amount)::numeric(14, 2)::text as total
+    from expenses e
+    join expense_categories c on c.id = e.category_id
+    join construction_sites s on s.id = e.site_id
+    left join labour_workers w on w.id = e.labour_worker_id and w.organization_id = ${actor.orgId}
+    where e.site_id in ${siteIds} and e.deleted_at is null and e.status = 'approved' and c.code = 'labour'
+    group by grouping sets ((w.id, w.name, w.trade, e.site_id, s.name), (w.id, w.name, w.trade), (e.site_id, s.name), ())
+  `)) as unknown as { site_id: string | null; site_name: string | null; worker_id: string | null; name: string | null; trade: string | null; all_sites: number; all_workers: number; total: string }[];
+  const workers = new Map<string | null, WorkerAcrossSites>();
+  const worker = (r: (typeof rows)[number]) => {
+    let w = workers.get(r.worker_id);
+    if (!w) workers.set(r.worker_id, (w = { workerId: r.worker_id, name: r.name, trade: r.trade, total: "0.00", bySite: {} }));
+    return w;
+  };
+  for (const r of rows) {
+    if (r.all_workers && r.all_sites) result.total = r.total;
+    else if (r.all_workers) result.sites.push({ siteId: r.site_id!, siteName: r.site_name!, total: r.total });
+    else if (r.all_sites) worker(r).total = r.total;
+    else worker(r).bySite[r.site_id!] = r.total;
+  }
+  result.sites.sort((a, b) => a.siteName.localeCompare(b.siteName) || a.siteId.localeCompare(b.siteId));
+  result.workers = [...workers.values()].sort(
+    (a, b) => Number(a.workerId === null) - Number(b.workerId === null) || Number(b.total) - Number(a.total) || (a.name ?? "").localeCompare(b.name ?? ""),
+  );
+  return result;
+}
+
 export type LedgerLine = {
   date: string;
   kind: "attendance" | "wage" | "advance";

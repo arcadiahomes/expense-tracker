@@ -7,6 +7,7 @@ import {
   createWorker,
   labourBalances,
   labourBySite,
+  labourByWorker,
   labourTotals,
   mergeWorkers,
   recordAttendance,
@@ -218,6 +219,32 @@ describe("worker totals", () => {
     ]);
     expect(one.cash).toBe("1900.00");
     expect((await labourBySite(w.a.eng2)).some((x) => x.siteId === s)).toBe(false);
+  });
+
+  it("list each worker's labour paid on every readable site, with totals that add up", async () => {
+    const s1 = (await createSite(w.a.owner, { name: "Across One", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    const s2 = (await createSite(w.a.owner, { name: "Across Two", location: "Kochi", budget: "100000", startDate: "2026-01-01" })).site.id;
+    await recordLabourPayment(w.a.owner, { siteId: s1, kind: "wage", method: "cash", workerId: anu, amount: "1000", paidOn: "2026-10-01" });
+    await recordLabourPayment(w.a.owner, { siteId: s2, kind: "advance", method: "upi", workerId: anu, amount: "250.50", paidOn: "2026-10-03" });
+    await recordLabourPayment(w.a.owner, { siteId: s2, kind: "wage", method: "cash", workerId: akhil, amount: "600", paidOn: "2026-10-02" });
+    const gone = await recordLabourPayment(w.a.owner, { siteId: s1, kind: "wage", method: "cash", workerId: akhil, amount: "999", paidOn: "2026-10-02" });
+    await deleteExpense(w.a.owner, gone.expenseId);
+    await createExpense(w.a.owner, expense(s1, { categoryCode: "labour", description: "Gang", items: [{ description: "Gang", unitPrice: "300" }] }));
+
+    const all = await labourByWorker(w.a.owner);
+    const row = (id: string | null) => all.workers.find((x) => x.workerId === id)!;
+    expect([row(anu).bySite[s1], row(anu).bySite[s2]]).toEqual(["1000.00", "250.50"]);
+    expect([row(akhil).bySite[s1], row(akhil).bySite[s2]]).toEqual([undefined, "600.00"]);
+    expect(row(null).bySite[s1]).toBe("300.00");
+    expect(all.workers.at(-1)!.workerId).toBeNull();
+    expect(all.sites.filter((x) => x.siteId === s1 || x.siteId === s2).map((x) => [x.siteName, x.total])).toEqual([
+      ["Across One", "1300.00"],
+      ["Across Two", "850.50"],
+    ]);
+    const sum = (xs: string[]) => xs.reduce((t, x) => t + Math.round(Number(x) * 100), 0);
+    for (const x of all.workers) expect(sum(Object.values(x.bySite))).toBe(sum([x.total]));
+    expect(sum(all.sites.map((x) => x.total))).toBe(sum([all.total]));
+    expect((await labourByWorker(w.a.eng2)).sites.some((x) => x.siteId === s1)).toBe(false);
   });
 
   it("sum each worker's payments on the site, with no attendance needed", async () => {

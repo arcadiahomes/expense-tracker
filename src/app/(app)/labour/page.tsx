@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { PageSkeleton } from "@/components/states";
 import { LabourNoSites, LabourView } from "@/components/views/labour";
-import { labourTotals, listWorkers } from "@/server/data/labour";
+import { labourByWorker, labourTotals, listWorkers } from "@/server/data/labour";
 import { pickSite } from "@/server/data/sites";
 import { activeSiteCookie, requireRecordsReader } from "@/server/session";
 
@@ -16,11 +16,12 @@ async function Labour({ searchParams }: PageProps<"/labour">) {
   if (!siteId) {
     return <LabourNoSites />;
   }
-  const [totals, workers] = await Promise.all([labourTotals(actor, siteId), listWorkers(actor)]);
+  const [totals, workers, allSites] = await Promise.all([labourTotals(actor, siteId), listWorkers(actor), labourByWorker(actor)]);
   return (
     <LabourView
       siteId={siteId}
       totals={totals}
+      allSites={allSites}
       workers={workers.map((w) => ({ id: w.id, name: w.name, trade: w.trade, phone: w.phone, dailyWage: w.dailyWage == null ? null : String(w.dailyWage), active: w.active }))}
     />
   );

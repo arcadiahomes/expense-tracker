@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, Stat, useSubmit } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
+import { Panel } from "@/components/panel";
 import { SelectField } from "@/components/select-field";
 import { SitePicker } from "@/components/site-picker";
 import { EmptyState } from "@/components/states";
@@ -19,7 +20,7 @@ import { can } from "@/lib/permissions";
 import { useCanManageOrg, useFormat, useSession } from "@/lib/session";
 import { deleteExpenseAction, restoreExpenseAction } from "@/server/actions/expenses";
 import { createWorkerAction, loadWorkerPaymentsAction, loadWorkerSiteTotalsAction, mergeWorkersAction, updateWorkerAction } from "@/server/actions/labour";
-import type { WorkerPayment, WorkerSiteTotal, WorkerTotal } from "@/server/data/labour";
+import type { LabourByWorker, WorkerPayment, WorkerSiteTotal, WorkerTotal } from "@/server/data/labour";
 import { cn } from "@/lib/utils";
 
 type Worker = { id: string; name: string; trade: string | null; phone: string | null; dailyWage: string | null; active: boolean };
@@ -32,7 +33,7 @@ type Totals = {
   unassigned: { payments: number; total: string; thisMonth: string };
 };
 
-export function LabourView({ siteId, totals, workers }: { siteId: string; totals: Totals; workers: Worker[] }) {
+export function LabourView({ siteId, totals, allSites, workers }: { siteId: string; totals: Totals; allSites: LabourByWorker; workers: Worker[] }) {
   const { sites } = useSession();
   const fmt = useFormat();
   const site = sites.find((s) => s.id === siteId);
@@ -56,7 +57,7 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
     <>
       <PageHeader
         title="Labour"
-        description="What each worker has been paid on this site. Payments are labour expenses: add them on the Expenses page and name the worker."
+        description="What each worker has been paid on every site. Payments are labour expenses: add them on the Expenses page and name the worker."
         actions={
           canWrite && (
             <Button variant="outline" className="h-11" onClick={() => setEditing("new")}>
@@ -65,6 +66,8 @@ export function LabourView({ siteId, totals, workers }: { siteId: string; totals
           )
         }
       />
+      <AllSites data={allSites} />
+      <h2 className="mb-3 text-base font-semibold">One site</h2>
       <SitePicker siteId={siteId} className="mb-5" />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-3">
@@ -410,6 +413,55 @@ function Payments({ siteId, worker, canWrite }: { siteId: string; worker: Worker
         onConfirm={() => deleting && remove(deleting)}
       />
     </>
+  );
+}
+
+/** Each worker's total on every readable site (one column per site); every figure was summed by the server. */
+function AllSites({ data }: { data: LabourByWorker }) {
+  const fmt = useFormat();
+  if (data.workers.length === 0) return null;
+  return (
+    <Panel className="mb-6" title="All sites" description={`${fmt.money(Number(data.total))} paid for labour across ${data.sites.length} ${data.sites.length === 1 ? "site" : "sites"}`}>
+      <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <table className="w-full text-sm" style={{ minWidth: `${280 + data.sites.length * 120}px` }}>
+          <caption className="sr-only">Labour paid to each worker on each site</caption>
+          <thead>
+            <tr className="border-b text-left text-xs text-muted-foreground">
+              <th scope="col" className="py-2 pr-3 font-medium">Worker</th>
+              {data.sites.map((s) => (
+                <th key={s.siteId} scope="col" className="py-2 pr-3 text-right font-medium">{s.siteName}</th>
+              ))}
+              <th scope="col" className="py-2 text-right font-medium">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.workers.map((w) => (
+              <tr key={w.workerId ?? "unassigned"} className="border-b last:border-0">
+                <th scope="row" className="py-2 pr-3 text-left font-medium">
+                  {w.name ?? <span className="text-muted-foreground">No worker named</span>}
+                  {w.trade && <span className="block text-xs font-normal text-muted-foreground">{w.trade}</span>}
+                </th>
+                {data.sites.map((s) => (
+                  <td key={s.siteId} className="num py-2 pr-3 text-right">
+                    {w.bySite[s.siteId] ? fmt.money(Number(w.bySite[s.siteId])) : <span className="text-muted-foreground">–</span>}
+                  </td>
+                ))}
+                <td className="num py-2 text-right font-semibold">{fmt.money(Number(w.total))}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t text-left">
+              <th scope="row" className="py-2 pr-3 font-semibold">Site total</th>
+              {data.sites.map((s) => (
+                <td key={s.siteId} className="num py-2 pr-3 text-right font-semibold">{fmt.money(Number(s.total))}</td>
+              ))}
+              <td className="num py-2 text-right font-semibold">{fmt.money(Number(data.total))}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </Panel>
   );
 }
 
