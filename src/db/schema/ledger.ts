@@ -634,6 +634,8 @@ export const clientPayments = pgTable(
     invoiceId: uuid().references(() => clientInvoices.id, { onDelete: "cascade" }),
     /** Who paid, for standalone receipts and refunds of them; invoice receipts use the invoice's client. */
     receivedFrom: text(),
+    /** On a standalone receipt, the whole amount the payer owes, if given; its balance is this less what's been received. */
+    totalPayable: money(),
     kind: clientPaymentKind().notNull(),
     receiptNumber: text().notNull(),
     amount: money().notNull(),
@@ -661,5 +663,6 @@ export const clientPayments = pgTable(
     check("client_payments_related", sql`(${t.kind} = 'payment') = (${t.relatedId} is null)`),
     check("client_payments_refund_has_reason", sql`${t.kind} = 'payment' or length(btrim(${t.notes})) > 0`),
     check("client_payments_payer", sql`${t.invoiceId} is not null or length(btrim(${t.receivedFrom})) > 0`),
+    check("client_payments_total_payable", sql`${t.totalPayable} is null or (${t.invoiceId} is null and ${t.kind} = 'payment' and ${t.totalPayable} >= ${t.amount})`),
   ],
 );

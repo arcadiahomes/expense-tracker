@@ -2,15 +2,16 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
-import { Building2, ChevronDown, Download, FileText, History, Plus, Printer, ReceiptIndianRupee, ReceiptText, Search, Undo2, X } from "lucide-react";
+import { Building2, ChevronDown, Download, FileText, History, Plus, Printer, ReceiptIndianRupee, ReceiptText, Search, Trash2, Undo2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { methodLabel, PaymentForm, receiptPdfHref, RefundForm, STAGE, StageBadge, StandaloneReceiptForm, type PayableInvoice } from "@/components/client-payment-form";
-import { Field } from "@/components/form-bits";
+import { Field, useSubmit } from "@/components/form-bits";
 import { PageHeader } from "@/components/page-header";
 import { SelectField } from "@/components/select-field";
 import { EmptyState } from "@/components/states";
@@ -19,7 +20,7 @@ import { can } from "@/lib/permissions";
 import { useFormat, useSession } from "@/lib/session";
 import type { ClientInvoice, ClientReceipt, Page, ProjectCollection, ReceiptStage } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { loadInvoicePaymentsAction, loadReceiptsAction } from "@/server/actions/client-payments";
+import { deleteClientPaymentAction, loadInvoicePaymentsAction, loadReceiptsAction } from "@/server/actions/client-payments";
 import { loadInvoicesAction } from "@/server/actions/invoices";
 
 type SiteOption = { id: string; name: string };
@@ -190,6 +191,10 @@ export function ReceiptsView({
         onChanged={(r) => {
           setVersion((v) => v + 1);
           setReceipt(r);
+        }}
+        onDeleted={() => {
+          setVersion((v) => v + 1);
+          setReceipt(null);
         }}
       />
       <InvoiceHistorySheet
@@ -409,10 +414,23 @@ function ReceiptList({
 
 // ---- One receipt -----------------------------------------------------------------
 
-function ReceiptSheet({ receipt, onClose, onHistory, onChanged }: { receipt: ClientReceipt | null; onClose: () => void; onHistory: (invoiceId: string) => void; onChanged: (r: ClientReceipt) => void }) {
+function ReceiptSheet({
+  receipt,
+  onClose,
+  onHistory,
+  onChanged,
+  onDeleted,
+}: {
+  receipt: ClientReceipt | null;
+  onClose: () => void;
+  onHistory: (invoiceId: string) => void;
+  onChanged: (r: ClientReceipt) => void;
+  onDeleted: () => void;
+}) {
   const fmt = useFormat();
   const canRefund = useCanRefund();
   const [refunding, setRefunding] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const r = receipt;
   const payment = r?.kind === "payment";
   const givesBack = !!r && payment && !r.reversed && r.refunded < r.amount && canRefund(r.siteId);
@@ -441,6 +459,14 @@ function ReceiptSheet({ receipt, onClose, onHistory, onChanged }: { receipt: Cli
                     <div className="flex justify-between"><dt className="text-muted-foreground">Previously paid</dt><dd>{exact(r.paidBefore)}</dd></div>
                     <div className="flex justify-between"><dt className="text-muted-foreground">{payment ? "This payment" : r.kind === "refund" ? "Less this refund" : "Less this reversal"}</dt><dd className={payment ? "text-good" : "text-over"}>{payment ? "" : "− "}{exact(r.amount)}</dd></div>
                     <div className="flex justify-between border-t pt-1.5 font-medium"><dt>Total paid to date</dt><dd>{exact(r.paidToDate)}</dd></div>
+                    <div className="flex justify-between text-base font-semibold"><dt>Remaining balance</dt><dd>{exact(Math.max(r.balanceAfter, 0))}</dd></div>
+                  </dl>
+                ) : r.totalPayable !== null && r.balanceAfter !== null ? (
+                  <dl className="num grid gap-1.5 px-4 py-3 text-sm">
+                    <div className="flex justify-between"><dt className="text-muted-foreground">Total amount payable</dt><dd className="font-medium">{exact(r.totalPayable)}</dd></div>
+                    {!payment && <div className="flex justify-between"><dt className="text-muted-foreground">Received before</dt><dd>{exact(r.paidBefore)}</dd></div>}
+                    <div className="flex justify-between"><dt className="text-muted-foreground">{payment ? "This payment" : r.kind === "refund" ? "Less this refund" : "Less this reversal"}</dt><dd className={payment ? "text-good" : "text-over"}>{payment ? "" : "− "}{exact(r.amount)}</dd></div>
+                    <div className="flex justify-between border-t pt-1.5 font-medium"><dt>Net received</dt><dd>{exact(r.paidToDate)}</dd></div>
                     <div className="flex justify-between text-base font-semibold"><dt>Remaining balance</dt><dd>{exact(Math.max(r.balanceAfter, 0))}</dd></div>
                   </dl>
                 ) : (
@@ -492,11 +518,73 @@ function ReceiptSheet({ receipt, onClose, onHistory, onChanged }: { receipt: Cli
                   }}
                 />
               )}
+              {canRefund(r.siteId) && !refunding && (
+                <Button variant="ghost" className="h-11 w-full text-over hover:bg-over/8 hover:text-over" onClick={() => setDeleting(true)}>
+                  <Trash2 aria-hidden /> Delete {payment ? "receipt" : r.kind}
+                </Button>
+              )}
             </div>
+            <DeleteReceiptDialog
+              receipt={r}
+              open={deleting}
+              onOpenChange={setDeleting}
+              onDeleted={() => {
+                setDeleting(false);
+                onDeleted();
+              }}
+            />
           </>
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+/** Deletes one receipt, refund or reversal outright, with the reason kept in the audit log. */
+function DeleteReceiptDialog({ receipt: r, open, onOpenChange, onDeleted }: { receipt: ClientReceipt; open: boolean; onOpenChange: (o: boolean) => void; onDeleted: () => void }) {
+  const send = useSubmit();
+  const [pending, start] = useTransition();
+  const [reason, setReason] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const hasGivenBack = r.kind === "payment" && r.refunded > 0;
+
+  function confirm() {
+    start(async () => {
+      const res = await send(() => deleteClientPaymentAction({ id: r.id, reason }), setErrors);
+      if (res) {
+        toast.success(`${res.receiptNo} deleted`);
+        setReason("");
+        onDeleted();
+      }
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !pending && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold">Delete {r.receiptNo}?</DialogTitle>
+          <DialogDescription>
+            {hasGivenBack
+              ? "This payment has refunds or a reversal against it. Delete those first."
+              : `This removes the ${exact(r.amount)} ${r.kind === "payment" ? "receipt" : r.kind} from ${r.client}${r.invoiceNo ? ` and changes the balance of invoice ${r.invoiceNo}` : ""}. It can't be undone. If the money really came in and went back, record a refund or reversal instead.`}
+          </DialogDescription>
+        </DialogHeader>
+        {!hasGivenBack && (
+          <Field id="del-reason" label="Reason" error={errors.reason}>
+            <Textarea id="del-reason" rows={2} maxLength={500} placeholder="e.g. Entered twice by mistake" value={reason} onChange={(e) => setReason(e.target.value)} />
+          </Field>
+        )}
+        <DialogFooter>
+          <Button variant="outline" className="h-11" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
+          {!hasGivenBack && (
+            <Button className="h-11 bg-over px-5 text-white hover:bg-over/90" onClick={confirm} disabled={pending || !reason.trim()}>
+              {pending ? "Deleting…" : "Delete"}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

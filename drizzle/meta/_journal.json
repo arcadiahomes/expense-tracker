@@ -127,6 +127,20 @@
       "when": 1792922028674,
       "tag": "0017_standalone_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794130257121,
+      "tag": "0018_standalone_total_payable",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794130259731,
+      "tag": "0019_client_payments_delete",
+      "breakpoints": true
     }
   ]
 }

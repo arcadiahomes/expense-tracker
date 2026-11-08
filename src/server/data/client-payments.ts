@@ -6,7 +6,7 @@ import { formatINRExact as formatINR } from "@/lib/format";
 import type { ClientInvoice, ClientPaymentKind, ClientReceipt, Page, PaymentMode, ProjectCollection, ReceiptStage } from "@/lib/types";
 import { can, requireSitePermission, scopeSiteIds, siteRoleFor, type Actor } from "../authz";
 import { NotFoundError, ValidationError } from "../errors";
-import { clientPaymentInput, clientRefundInput, invoicePaidInput, receiptFilters, standaloneReceiptInput, uuid } from "../validation";
+import { clientPaymentInput, clientRefundInput, deleteClientPaymentInput, invoicePaidInput, receiptFilters, standaloneReceiptInput, uuid } from "../validation";
 import { audit } from "./audit";
 import { financialYear, getClientInvoice, invoicePaidSql, invoicesQuery, invoiceTotalSql, lockInvoice } from "./invoices";
 import { organizationProfile } from "./organizations";
@@ -50,6 +50,7 @@ type LedgerRow = {
   paid_before: string;
   paid_to_date: string;
   balance_after: string | null;
+  total_payable: string | null;
   refunded: string;
   reversed: boolean;
   created_by: string;
@@ -64,7 +65,10 @@ type LedgerRow = {
 function ledgerQuery(siteIds: string[]) {
   return sql`
     select l.*,
-           case when l.invoice_id is not null then (l.invoice_total::numeric - l.paid_to_date::numeric)::numeric(14, 2)::text end as balance_after,
+           case
+             when l.invoice_id is not null then (l.invoice_total::numeric - l.paid_to_date::numeric)::numeric(14, 2)::text
+             when l.total_payable is not null then (l.total_payable::numeric - l.paid_to_date::numeric)::numeric(14, 2)::text
+           end as balance_after,
            case
              when l.kind <> 'payment' then l.kind::text
              when l.invoice_id is null then 'general'
@@ -77,6 +81,7 @@ function ledgerQuery(siteIds: string[]) {
              p.method, p.reference, p.notes, p.related_id, r.receipt_number as related_number,
              p.invoice_id, i.invoice_number, case when i.id is not null then ${invoiceTotalSql}::text end as invoice_total,
              coalesce(p.invoice_id, p.related_id, p.id) as group_id,
+             case when p.invoice_id is null then coalesce(p.total_payable, r.total_payable)::text end as total_payable,
              p.site_id, cs.name as site_name, coalesce(i.client_name, p.received_from) as client_name,
              coalesce(sum(case p.kind when 'payment' then p.amount else -p.amount end)
                over (partition by coalesce(p.invoice_id, p.related_id, p.id) order by p.seq rows between unbounded preceding and 1 preceding), 0)::numeric(14, 2)::text as paid_before,
@@ -115,6 +120,7 @@ function toDto(r: LedgerRow): ClientReceipt {
     paidBefore: num(r.paid_before),
     paidToDate: num(r.paid_to_date),
     balanceAfter: r.balance_after == null ? null : num(r.balance_after),
+    totalPayable: r.total_payable == null ? null : num(r.total_payable),
     related: r.related_id && r.related_number ? { id: r.related_id, receiptNo: r.related_number } : undefined,
     refunded: num(r.refunded),
     reversed: r.reversed,
@@ -398,6 +404,7 @@ export async function recordStandaloneReceipt(actor: Actor, raw: unknown) {
         siteId: input.siteId,
         invoiceId: null,
         receivedFrom: input.receivedFrom,
+        totalPayable: input.totalPayable,
         kind: "payment",
         receiptNumber: nextReceiptNumber(actor.orgId, "RCT", input.paidOn),
         amount: input.amount,
@@ -414,8 +421,8 @@ export async function recordStandaloneReceipt(actor: Actor, raw: unknown) {
       action: "payment.receive",
       entityType: "client_payment",
       entityId: id,
-      summary: `Receipt ${receiptNumber}: ${formatINR(num(input.amount))} from ${input.receivedFrom} (general receipt, no invoice)`,
-      data: { receiptNumber, receivedFrom: input.receivedFrom, amount: input.amount, paidOn: input.paidOn, method: input.method, reference: input.reference, notes: input.notes },
+      summary: `Receipt ${receiptNumber}: ${formatINR(num(input.amount))} from ${input.receivedFrom} (general receipt, no invoice${input.totalPayable ? `, ${formatINR(num(input.totalPayable) - num(input.amount))} of ${formatINR(num(input.totalPayable))} left` : ""})`,
+      data: { receiptNumber, receivedFrom: input.receivedFrom, totalPayable: input.totalPayable, amount: input.amount, paidOn: input.paidOn, method: input.method, reference: input.reference, notes: input.notes },
     });
     return { id, siteId: input.siteId, groupId: id };
   });
@@ -503,4 +510,43 @@ export async function refundClientPayment(actor: Actor, raw: unknown) {
     return { id, siteId, groupId: inv?.id ?? input.paymentId };
   });
   return saved(result);
+}
+
+/**
+ * Deletes one receipt, refund or reversal outright (entered by mistake), for people with
+ * `payment:refund` on its site. A payment that has refunds or a reversal against it can't
+ * be deleted until those are. The row is gone, so later receipts on the same invoice show
+ * figures without it; the audit entry keeps everything it said. The ledger's trigger only
+ * lets this transaction's delete through (app.client_payment_delete is set locally).
+ */
+export async function deleteClientPayment(actor: Actor, raw: unknown) {
+  const input = deleteClientPaymentInput.parse(raw);
+  const [target] = await db
+    .select({ invoiceId: clientPayments.invoiceId, siteId: clientPayments.siteId })
+    .from(clientPayments)
+    .where(and(eq(clientPayments.id, input.id), eq(clientPayments.organizationId, actor.orgId)))
+    .limit(1);
+  if (!target) throw new NotFoundError("Receipt");
+
+  return db.transaction(async (tx) => {
+    // Same lock order as payments and refunds: the invoice, or the standalone receipt's row.
+    if (target.invoiceId) await lockInvoice(actor, target.invoiceId, tx);
+    await requireSitePermission(actor, target.siteId, "payment:refund", tx);
+    const [row] = await tx.select().from(clientPayments).where(eq(clientPayments.id, input.id)).for("update");
+    if (!row) throw new NotFoundError("Receipt");
+    const [{ n }] = (await tx.execute(sql`select count(*)::int as n from client_payments where related_id = ${row.id}`)) as unknown as { n: number }[];
+    if (n > 0) throw new ValidationError(`Receipt ${row.receiptNumber} has refunds or a reversal against it. Delete those first.`);
+
+    await audit(tx, actor, {
+      siteId: row.siteId,
+      action: "payment.delete",
+      entityType: "client_payment",
+      entityId: row.id,
+      summary: `Deleted ${row.kind === "payment" ? "receipt" : row.kind} ${row.receiptNumber} (${formatINR(num(row.amount))}): ${input.reason}`,
+      data: { ...row, createdAt: undefined, reason: input.reason },
+    });
+    await tx.execute(sql`select set_config('app.client_payment_delete', 'on', true)`);
+    await tx.delete(clientPayments).where(eq(clientPayments.id, row.id));
+    return { id: row.id, receiptNo: row.receiptNumber };
+  });
 }
