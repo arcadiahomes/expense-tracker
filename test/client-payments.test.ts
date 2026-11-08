@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import {
+  deleteClientPayment,
   getReceipt,
   invoicePayments,
   listReceipts,
@@ -327,5 +328,49 @@ describe("standalone receipts", () => {
     expect(rev).toMatchObject({ amount: 1000, paidToDate: 0 });
     // Each standalone receipt runs on its own: the first one's figures are unchanged.
     expect((await getReceipt(w.a.owner, g.id)).receipt).toMatchObject({ paidToDate: 25000, refunded: 5000 });
+  });
+
+  it("keeps a total amount payable and shows the balance left", async () => {
+    const { siteId } = await project("General Receipt Payable");
+    const g = await general(siteId, { totalPayable: "100000" });
+    expect(g).toMatchObject({ amount: 25000, totalPayable: 100000, paidToDate: 25000, balanceAfter: 75000, stage: "general" });
+    await expect(general(siteId, { totalPayable: "20000" })).rejects.toThrow();
+    const refund = await refundClientPayment(w.a.owner, { paymentId: g.id, kind: "refund", amount: "5000", paidOn: "2026-10-04", method: "bank", reason: "Overpaid", clientKey: crypto.randomUUID() });
+    expect(refund).toMatchObject({ totalPayable: 100000, paidToDate: 20000, balanceAfter: 80000 });
+    expect((await general(siteId)).totalPayable).toBeNull();
+    expect((await renderReceiptPdf(await getReceipt(w.a.owner, g.id))).subarray(0, 5).toString()).toBe("%PDF-");
+  });
+});
+
+describe("deleting receipts", () => {
+  const reason = "Entered by mistake";
+
+  it("deletes a receipt outright, audited, and the invoice balance follows", async () => {
+    const { inv } = await project("Delete Receipt Site");
+    const a = await pay(inv.id, "1000");
+    const b = await pay(inv.id, "2000");
+    await expect(deleteClientPayment(w.a.owner, { id: a.id, reason: " " })).rejects.toThrow();
+    await deleteClientPayment(w.a.owner, { id: a.id, reason });
+    await expect(getReceipt(w.a.owner, a.id)).rejects.toBeInstanceOf(NotFoundError);
+    expect((await getClientInvoice(w.a.owner, inv.id)).paid).toBe(2000);
+    expect((await getReceipt(w.a.owner, b.id)).receipt).toMatchObject({ paidBefore: 0, paidToDate: 2000 });
+    const audit = (await db.execute(sql`select action from audit_log where entity_id = ${a.id} order by created_at`)) as unknown as { action: string }[];
+    expect(audit.map((r) => r.action)).toEqual(["payment.receive", "payment.delete"]);
+    // Outside the app's delete, the ledger still refuses deletes.
+    await expect(db.execute(sql`delete from client_payments where id = ${b.id}`)).rejects.toThrow();
+  });
+
+  it("needs refunds deleted first, and payment:refund on the site", async () => {
+    const { inv } = await project("Delete Receipt Rules");
+    const a = await pay(inv.id, "1000");
+    const refund = await refundClientPayment(w.a.owner, { paymentId: a.id, kind: "refund", amount: "100", paidOn: "2026-10-02", method: "bank", reason: "Overpaid", clientKey: crypto.randomUUID() });
+    await expect(deleteClientPayment(w.a.owner, { id: a.id, reason })).rejects.toBeInstanceOf(ValidationError);
+    await expect(deleteClientPayment(w.b.owner, { id: refund.id, reason })).rejects.toBeInstanceOf(NotFoundError);
+    await deleteClientPayment(w.a.owner, { id: refund.id, reason });
+    await deleteClientPayment(w.a.owner, { id: a.id, reason });
+    expect((await getClientInvoice(w.a.owner, inv.id)).paid).toBe(0);
+
+    const s1 = await recordClientPayment(w.a.owner, { invoiceId: (await project("Delete Receipt Acct")).inv.id, amount: "10", paidOn: "2026-10-01", method: "cash", clientKey: crypto.randomUUID() });
+    await expect(deleteClientPayment(w.a.accountant, { id: s1.id, reason })).rejects.toThrow();
   });
 });

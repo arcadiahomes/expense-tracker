@@ -228,6 +228,7 @@ export function StandaloneReceiptForm({
   const [form, setForm] = useState({
     siteId: sites.length === 1 ? sites[0].id : "",
     receivedFrom: "",
+    totalPayable: "",
     amount: "",
     paidOn: today,
     method: "bank" as PaymentMode,
@@ -237,6 +238,9 @@ export function StandaloneReceiptForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
   const amount = toPaise(form.amount);
+  const payable = form.totalPayable.trim() ? toPaise(form.totalPayable) : null;
+  const over = payable !== null && amount !== null && amount > payable;
+  const left = payable !== null && amount !== null && !over ? payable - amount : null;
 
   function save(e: FormEvent) {
     e.preventDefault();
@@ -246,6 +250,7 @@ export function StandaloneReceiptForm({
         () =>
           recordStandaloneReceiptAction({
             ...form,
+            totalPayable: form.totalPayable.trim() ? form.totalPayable.replace(/,/g, "") : undefined,
             amount: form.amount.replace(/,/g, ""),
             reference: form.reference || undefined,
             notes: form.notes || undefined,
@@ -255,7 +260,7 @@ export function StandaloneReceiptForm({
       );
       if (res) {
         toast.success(`Receipt ${res.receiptNo} created`, {
-          description: `${exact(res.amount)} from ${res.client}`,
+          description: `${exact(res.amount)} from ${res.client}${res.balanceAfter !== null ? (res.balanceAfter > 0 ? `, ${exact(res.balanceAfter)} left` : ", paid in full") : ""}`,
           action: { label: "Download", onClick: () => window.location.assign(receiptPdfHref(res.id)) },
         });
         onDone(res);
@@ -272,8 +277,11 @@ export function StandaloneReceiptForm({
         <Field id="gr-from" label="Received from" error={errors.receivedFrom}>
           <Input id="gr-from" className="h-11" maxLength={200} autoComplete="off" placeholder="Name of the person or company" value={form.receivedFrom} onChange={(e) => set("receivedFrom", e.target.value)} />
         </Field>
-        <Field id="gr-amount" label="Amount received (₹)" error={errors.amount}>
-          <Input id="gr-amount" inputMode="decimal" autoComplete="off" className="num h-11" placeholder="e.g. 25000" aria-invalid={!!errors.amount} value={form.amount} onChange={(e) => set("amount", e.target.value.replace(/[^\d.,]/g, ""))} />
+        <Field id="gr-total" label="Total amount payable (₹, optional)" error={errors.totalPayable}>
+          <Input id="gr-total" inputMode="decimal" autoComplete="off" className="num h-11" placeholder="e.g. 100000" aria-invalid={!!errors.totalPayable} value={form.totalPayable} onChange={(e) => set("totalPayable", e.target.value.replace(/[^\d.,]/g, ""))} />
+        </Field>
+        <Field id="gr-amount" label="Amount received (₹)" error={errors.amount ?? (over ? `That's more than the ${exact(payable! / 100)} payable.` : undefined)}>
+          <Input id="gr-amount" inputMode="decimal" autoComplete="off" className="num h-11" placeholder="e.g. 25000" aria-invalid={!!errors.amount || over} value={form.amount} onChange={(e) => set("amount", e.target.value.replace(/[^\d.,]/g, ""))} />
         </Field>
         <Field id="gr-date" label="Received on" error={errors.paidOn}>
           <Input id="gr-date" type="date" max={today} className="h-11" value={form.paidOn} onChange={(e) => set("paidOn", e.target.value)} />
@@ -289,9 +297,16 @@ export function StandaloneReceiptForm({
         </Field>
       </div>
 
+      {left !== null && (
+        <div aria-live="polite" className="num flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/5 p-3 text-sm">
+          <span>Total payable <span className="font-semibold">{exact(payable! / 100)}</span></span>
+          <span>Balance after this receipt: <span className="font-semibold">{exact(left / 100)}</span></span>
+        </div>
+      )}
+
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <Button type="button" variant="ghost" className="h-11" onClick={onCancel} disabled={pending}>Cancel</Button>
-        <Button type="submit" className="h-11 px-5" disabled={pending || !form.siteId || !form.receivedFrom.trim() || amount === null || amount <= 0}>
+        <Button type="submit" className="h-11 px-5" disabled={pending || !form.siteId || !form.receivedFrom.trim() || amount === null || amount <= 0 || over || (!!form.totalPayable.trim() && (payable === null || payable <= 0))}>
           {pending ? "Saving…" : "Create receipt"}
         </Button>
       </div>

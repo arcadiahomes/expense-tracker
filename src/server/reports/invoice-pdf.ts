@@ -71,6 +71,12 @@ type Col = { label: string; width: number; align?: "left" | "right" };
 type Opts = PDFKit.Mixins.TextOptions & { bold?: boolean; size?: number; color?: string };
 type Org = OrganizationProfile | string;
 
+/** Arcadia's registered office, printed on every receipt's letterhead in place of the address in Settings. */
+export const OFFICIAL_COMPANY = {
+  name: "Arcadia Homes and Lifestyle",
+  address: "Bose Mahal, T.C 5/2227, near QRS, Gowari Nagar, Sreekaryam, Thiruvananthapuram, Kerala 695017, India",
+} as const;
+
 const profile = (org: Org): OrganizationProfile => (typeof org === "string" ? { name: org, address: "", phone: "", email: "", website: "" } : org);
 
 /** An A4 portrait page set with the helpers every document draws with. */
@@ -113,8 +119,11 @@ function setup(title: string, org: OrganizationProfile) {
   };
   const rule = (y: number, color = LINE, lineWidth = 0.6, x = left, w = width) => doc.moveTo(x, y).lineTo(x + w, y).lineWidth(lineWidth).strokeColor(color).stroke();
 
-  /** The page header: green band, the mark (no company name beside it), contact details, and the document title. */
-  const letterhead = (docTitle: string, number?: string) => {
+  /**
+   * The page header: green band, the mark, contact details, and the document title. With
+   * `company`, its name (bold) and address replace the organization's address beside the mark.
+   */
+  const letterhead = (docTitle: string, number?: string, company?: { name: string; address: string }) => {
     doc.rect(0, 0, doc.page.width, 6).fill(BRAND);
     doc.rect(0, 6, doc.page.width, 2).fill(ACCENT);
     const top = doc.page.margins.top;
@@ -124,7 +133,10 @@ function setup(title: string, org: OrganizationProfile) {
     const tw = width * 0.58 - mark - 12;
     let y = top + 4;
     const contact = [org.phone, org.email, org.website].filter(Boolean).join("  ·  ");
-    if (org.address) y = text(org.address, tx, y, { size: 8.5, color: MUTED, width: tw }) + 1;
+    if (company) {
+      y = text(company.name, tx, y, { size: 11, bold: true, color: BRAND, width: tw }) + 1;
+      y = text(company.address, tx, y, { size: 8.5, color: MUTED, width: tw }) + 1;
+    } else if (org.address) y = text(org.address, tx, y, { size: 8.5, color: MUTED, width: tw }) + 1;
     if (contact) y = text(contact, tx, y, { size: 8.5, color: MUTED, width: tw });
     const rx = left + width * 0.58;
     const rw = width * 0.42;
@@ -408,7 +420,7 @@ export async function renderReceiptPdf(
   const p = setup(`${title} ${r.receiptNo}`, org);
   const { left, width, text } = p;
 
-  let y = p.letterhead(title, r.receiptNo);
+  let y = p.letterhead(title, r.receiptNo, OFFICIAL_COMPANY);
   y = p.metaStrip(y, [
     { label: payment ? "Receipt date" : "Date", value: date(r.date) },
     { label: "Invoice no.", value: r.invoiceNo ?? "No invoice" },
@@ -459,7 +471,15 @@ export async function renderReceiptPdf(
           { label: "Total paid to date", value: money(r.paidToDate), strong: true },
           { label: "Remaining balance", value: money(Math.max(r.balanceAfter, 0)), highlight: r.balanceAfter > 0 ? BRAND : ACCENT },
         ]
-      : payment
+      : r.totalPayable !== null && r.balanceAfter !== null
+        ? [
+            { label: "Total amount payable", value: money(r.totalPayable), strong: true },
+            ...(payment ? [] : [{ label: "Received before", value: money(r.paidBefore) }]),
+            payment ? { label: "This payment", value: money(r.amount), color: ACCENT } : lessThis,
+            { label: "Net received", value: money(r.paidToDate), strong: true },
+            { label: "Remaining balance", value: money(Math.max(r.balanceAfter, 0)), highlight: r.balanceAfter > 0 ? BRAND : ACCENT },
+          ]
+        : payment
         ? [{ label: "Amount received", value: money(r.amount), highlight: BRAND }]
         : [{ label: "Received before", value: money(r.paidBefore) }, lessThis, { label: "Net received", value: money(r.paidToDate), highlight: BRAND }];
   const dw = width - 270;
@@ -492,7 +512,7 @@ export async function renderReceiptPdf(
         { label: "Receipt no.", width: 21 },
         { label: "Type", width: 20 },
         { label: "Amount", width: 21, align: "right" },
-        { label: inv ? "Balance after" : "Net received", width: 23, align: "right" },
+        { label: inv || r.totalPayable !== null ? "Balance after" : "Net received", width: 23, align: "right" },
       ],
       history.map((e) => [
         date(e.date),
@@ -505,7 +525,7 @@ export async function renderReceiptPdf(
     );
   }
 
-  p.signatures(y, payment ? (inv ? "Client's signature" : "Payer's signature") : inv ? "Received by (client)" : "Received by", `For ${org.name}`);
+  p.signatures(y, payment ? (inv ? "Client's signature" : "Payer's signature") : inv ? "Received by (client)" : "Received by", `For ${OFFICIAL_COMPANY.name}`);
   return p.footer(
     `${title} ${r.receiptNo} · ${r.client}`,
     `Internal receipt, not a tax invoice · computer-generated${preparedBy ? ` · prepared by ${preparedBy}` : ""}`,

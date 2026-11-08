@@ -198,6 +198,8 @@ export type ClientReceipt = {
   paidToDate: number;
   /** What's left to receive on the invoice; null without one. */
   balanceAfter: number | null;
+  /** On a standalone receipt (and refunds of one): the whole amount payable, if given. Its balance is in balanceAfter. */
+  totalPayable: number | null;
   /** For a refund or reversal: the payment it gives back. */
   related?: { id: string; receiptNo: string };
   /** For a payment: refunded or reversed against it since, and whether it was reversed. */

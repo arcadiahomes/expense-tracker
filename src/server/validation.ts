@@ -369,16 +369,26 @@ export const clientPaymentInput = z.object({
 });
 
 /** Money received without an invoice: a standalone receipt on one site, from whoever paid. */
-export const standaloneReceiptInput = z.object({
-  siteId: uuid,
-  receivedFrom: trimmed(200, "Received from"),
-  amount: positiveMoney,
-  paidOn: isoDate,
-  method: receivedBy,
-  reference: optionalText(120),
-  notes: optionalText(500),
-  clientKey: uuid,
-});
+export const standaloneReceiptInput = z
+  .object({
+    siteId: uuid,
+    receivedFrom: trimmed(200, "Received from"),
+    /** The whole amount the payer owes, if known; the receipt then shows the balance left. */
+    totalPayable: positiveMoney.optional(),
+    amount: positiveMoney,
+    paidOn: isoDate,
+    method: receivedBy,
+    reference: optionalText(120),
+    notes: optionalText(500),
+    clientKey: uuid,
+  })
+  .refine((r) => !r.totalPayable || Number(r.amount) <= Number(r.totalPayable), {
+    message: "The amount received is more than the total amount payable.",
+    path: ["amount"],
+  });
+
+/** Deleting one receipt, refund or reversal outright. */
+export const deleteClientPaymentInput = z.object({ id: uuid, reason: trimmed(500, "Reason") });
 
 /** Money given back against one payment (refund, any part of it), or the whole payment undone (reversal). */
 export const clientRefundInput = z

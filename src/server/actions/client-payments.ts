@@ -1,6 +1,6 @@
 "use server";
 
-import { invoicePayments, listReceipts, recordClientPayment, recordStandaloneReceipt, refundClientPayment } from "../data/client-payments";
+import { deleteClientPayment, invoicePayments, listReceipts, recordClientPayment, recordStandaloneReceipt, refundClientPayment } from "../data/client-payments";
 import { run } from "./run";
 
 export async function recordClientPaymentAction(input: unknown) {
@@ -21,4 +21,8 @@ export async function loadReceiptsAction(filters: unknown) {
 
 export async function loadInvoicePaymentsAction(invoiceId: string) {
   return run((actor) => invoicePayments(actor, invoiceId), { write: false });
+}
+
+export async function deleteClientPaymentAction(input: unknown) {
+  return run((actor) => deleteClientPayment(actor, input));
 }

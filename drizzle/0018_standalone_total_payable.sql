@@ -1,0 +1,2 @@
+ALTER TABLE "client_payments" ADD COLUMN "total_payable" numeric(14, 2);--> statement-breakpoint
+ALTER TABLE "client_payments" ADD CONSTRAINT "client_payments_total_payable" CHECK ("client_payments"."total_payable" is null or ("client_payments"."invoice_id" is null and "client_payments"."kind" = 'payment' and "client_payments"."total_payable" >= "client_payments"."amount"));
